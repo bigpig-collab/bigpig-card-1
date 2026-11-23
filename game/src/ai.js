@@ -1,108 +1,84 @@
-// TIDEBOUND — the Ink Baron's brain. One job: decide what the Baron does.
-// The Baron telegraphs his next suit so the player can read him and counter
-// it, then plays like a patient collector: damage while ahead, guard while
-// hurt, and a trick when it pays.
-import { SUIT_NAMES } from './config.js';
-import { baronDrawAndStart, playCard } from './rules.js';
+// BRASS BAZAAR — Madame Zinnia's brain. One job: decide what she plays and
+// what she telegraphs, so the player can read her and counter her.
+// She is readable by design: her next stall is always announced a turn ahead.
+import { BEATS, STALL_ORDER } from './config.js';
+import { drawFrom, mintUid } from './deck.js';
+import { addLog, playCard } from './rules.js';
 
-// Pick the suit the Baron reaches for next. Weighted toward the suit he
-// holds most of, so a watching player can guess it from his rhythm.
+const TELEGRAPH_LINES = {
+  spice: 'Zinnia reaches for the spice jars…',
+  silk: 'Zinnia fingers a bolt of silk…',
+  brass: 'Zinnia polishes a brass bell…',
+  leaf: 'Zinnia sniffs a sprig of mint…',
+};
+
+// Pick the stall she will favour next turn. She leans toward the stall that
+// beats the stall the player played most this turn — a tell the player can use.
 export function chooseTelegraph(game) {
-  const counts = { Ember: 0, Tide: 0, Gale: 0, Stone: 0 };
-  for (const card of game.baron.hand) counts[card.suit] += 1;
-  const suits = [...SUIT_NAMES].sort((a, b) => counts[b] - counts[a]);
-  const roll = game.random();
-  const pick = roll < 0.55 ? suits[0] : roll < 0.8 ? suits[1] : suits[Math.floor(game.random() * 4)];
-  game.telegraph = pick;
-  return pick;
+  const counts = {};
+  for (const s of game.stallsThisTurn) counts[s] = (counts[s] || 0) + 1;
+  let favourite = null;
+  let best = 0;
+  for (const s of STALL_ORDER) {
+    if ((counts[s] || 0) > best) { best = counts[s]; favourite = s; }
+  }
+  let stall;
+  if (favourite) {
+    stall = STALL_ORDER.find((s) => BEATS[s] === favourite) || 'spice';
+  } else {
+    stall = STALL_ORDER[Math.floor(game.random() * STALL_ORDER.length)];
+  }
+  game.telegraph = { stall, text: TELEGRAPH_LINES[stall] };
+  return game.telegraph;
 }
 
-export function telegraphHint(game) {
-  if (!game.telegraph) return 'The Baron watches you, ink dripping from his pen.';
-  return `The Baron reaches for ${game.telegraph}…`;
+// Score one of her cards for this turn. Sells that finish the duel win,
+// Undercut answers beat the player's last stall, cheap cards fill gaps.
+function scoreCard(game, card) {
+  let score = card.value;
+  if (card.kind === 'sell') {
+    score += 3;
+    if (card.value >= game.player.patrons) score += 50; // the killing blow
+    if (game.player.guard > 0) score -= 1;
+  }
+  if (card.kind === 'charm' && game.rival.patrons <= 12) score += 4;
+  if (card.kind === 'haggle' && card.effect === 'reflect' && game.player.hand.length >= 3) score += 3;
+  if (card.kind === 'haggle' && card.effect === 'steal') score += 2;
+  if (card.cost <= game.rival.coins - 2) score += 0.5; // keep a coin spare when cheap
+  // She answers the player's last stall with its counter.
+  const last = game.stallsThisTurn[game.stallsThisTurn.length - 1];
+  if (last && BEATS[card.stall] === last) score += 2;
+  return score - card.cost * 0.4;
 }
 
-// Build the Baron's plan for his turn: the hand indexes he will play, in
-// order. He spends up to his ink, favouring telegraphed-suit strikes, then
-// guards when his life is low, then tricks. Two disciplines keep him from
-// stalling: he never spends ink on a draw trick when his hand is already
-// full (the drawn cards would have nowhere to go), and when his hand holds
-// a big Strike he cannot quite afford yet and nothing cheap is worth
-// playing, he saves his ink for the next turn instead of frittering it.
-export function planBaronTurn(game) {
-  baronDrawAndStart(game);
-  const hand = game.baron.hand;
-  const handFull = hand.length >= 7;
-  const scored = hand.map((card, index) => {
-    let score = card.value;
-    if (card.kind === 'Strike') score += 3;
-    if (card.suit === game.telegraph) score += 4;
-    if (card.kind === 'Guard' && game.baron.life <= 12) score += 6;
-    if (card.kind === 'Guard' && game.baron.life > 20) score -= 3;
-    if (card.kind === 'Trick') score += 1;
-    if (card.kind === 'Trick' && handFull && (card.id.includes('sigil') || card.id.includes('charm') || card.id.includes('tailwind') || card.id.includes('quarry'))) score -= 5;
-    score -= card.cost;
-    return { index, score, card };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  // Save for a big Strike: if the best Strike in hand costs more than the
-  // ink on hand, one more turn's ink buys it, and nothing affordable is
-  // clearly worth playing, hold the ink.
-  const bestStrike = hand
-    .filter((card) => card.kind === 'Strike')
-    .sort((a, b) => b.value - a.value)[0];
-  const bestAffordable = scored.find((entry) => entry.card.cost <= game.baron.ink);
-  if (
-    bestStrike && bestStrike.cost > game.baron.ink && bestStrike.cost <= game.baron.ink + 1
-    && (!bestAffordable || bestAffordable.score < 4)
-  ) {
-    return [];
+// Play her whole turn at once: coins rise, she draws, then she plays her
+// best affordable cards (at most four), and telegraphs her next stall.
+export function runRivalTurn(game) {
+  const r = game.rival;
+  r.maxCoins = Math.min(10, r.maxCoins + 1);
+  r.coins = r.maxCoins;
+  r.guard = 0;
+  game.played = [];
+  game.stallsThisTurn = [];
+  game.chain = 0;
+  const drawn = drawFrom(r.pile, game.random, 2).map((c) => ({ ...c, uid: mintUid() }));
+  for (const c of drawn) {
+    if (r.hand.length < 7) r.hand.push(c);
+    else r.pile.discard.push(c);
   }
-  const plan = [];
-  let ink = game.baron.ink;
-  for (const entry of scored) {
-    if (plan.length >= 3) break;
-    if (entry.score < 1) continue;
-    if (entry.card.cost <= ink) {
-      plan.push(entry.index);
-      ink -= entry.card.cost;
-    }
-  }
-  // Play at least one card when he can afford anything and has nothing
-  // bigger to save for — even a weak one keeps the pressure on.
-  if (plan.length === 0) {
-    const savingForStrike = hand.some((card) => card.kind === 'Strike' && card.cost > game.baron.ink);
-    if (!savingForStrike) {
-      const cheapest = hand
-        .map((card, index) => ({ index, card }))
-        .filter((entry) => entry.card.cost <= game.baron.ink)
-        .sort((a, b) => a.card.cost - b.card.cost)[0];
-      if (cheapest) plan.push(cheapest.index);
-    }
-  }
-  return plan;
-}
+  addLog(game, `Zinnia draws ${drawn.length}, ${r.coins} coins.`);
 
-// Play one planned card (hand indexes shift as cards leave the hand, so the
-// plan is recomputed from the live hand each step by the caller).
-export function playPlannedCard(game, plan) {
-  if (!plan || plan.length === 0) return false;
-  const wanted = plan[0];
-  const hand = game.baron.hand;
-  // The plan holds indexes into the hand as it was; find the same card by uid.
-  const at = hand.findIndex((card) => card.uid === wanted.uid);
-  if (at === -1) {
-    plan.shift();
-    return playPlannedCard(game, plan);
+  let plays = 0;
+  while (plays < 4 && !game.duelOver && !game.matchOver) {
+    const affordable = r.hand.filter((c) => c.cost <= r.coins);
+    if (affordable.length === 0) break;
+    affordable.sort((a, b) => scoreCard(game, b) - scoreCard(game, a));
+    const pick = affordable[0];
+    if (scoreCard(game, pick) < 1.5 && plays > 0) break; // she keeps a bad hand
+    if (!playCard(game, 'rival', pick)) break;
+    plays += 1;
   }
-  playCard(game, game.baron, at);
-  plan.shift();
-  return true;
-}
-
-// Rebuild the plan as { uid } entries so indexes stay valid as the hand
-// shrinks. Called once per Baron turn by main.js.
-export function buildPlan(game) {
-  const indexes = planBaronTurn(game);
-  return indexes.map((index) => ({ uid: game.baron.hand[index].uid }));
+  if (plays === 0) addLog(game, 'Zinnia passes — nothing worth selling.');
+  chooseTelegraph(game);
+  return plays;
 }

@@ -1,47 +1,39 @@
-// TIDEBOUND — the card list. Every name, suit, cost and power is original,
-// written for this game. No card is borrowed from any published card game.
-// A card: { id, name, suit, kind, cost, value, text }.
-//   Strike: value = damage dealt to the other side.
-//   Guard:  value = block gained (absorbs damage until your next turn).
-//   Trick:  value = how strong the trick is; text says what it does.
+// BRASS BAZAAR — the card list. One job: every ware in the market, named once.
+// Each card: id, name, stall (one of the four market stalls), kind,
+// cost in coins, value (damage / guard / haggle strength), a one-line flavour
+// rule, and for Haggle cards an effect: 'draw' | 'steal' | 'reflect'.
 export const CARDS = [
-  // ---- Ember (red, flame): fast, hungry damage. ----
-  { id: 'ember-fang', name: 'Cinder Fang', suit: 'Ember', kind: 'Strike', cost: 2, value: 4, text: 'Deal 4 damage.' },
-  { id: 'ember-oath', name: 'Bonfire Oath', suit: 'Ember', kind: 'Strike', cost: 3, value: 6, text: 'Deal 6 damage.' },
-  { id: 'ember-waltz', name: 'Wildfire Waltz', suit: 'Ember', kind: 'Strike', cost: 4, value: 8, text: 'Deal 8 damage.' },
-  { id: 'ember-ward', name: 'Ember Ward', suit: 'Ember', kind: 'Guard', cost: 1, value: 4, text: 'Gain 4 block.' },
-  { id: 'ember-thief', name: 'Spark Thief', suit: 'Ember', kind: 'Trick', cost: 2, value: 1, text: 'Steal 1 ink from the Baron.' },
-  { id: 'ember-sigil', name: 'Flare Sigil', suit: 'Ember', kind: 'Trick', cost: 1, value: 1, text: 'Draw 1 card.' },
-  // ---- Tide (blue, wave): deep, steady damage and deep guards. ----
-  { id: 'tide-caller', name: 'Tidecaller', suit: 'Tide', kind: 'Strike', cost: 2, value: 4, text: 'Deal 4 damage.' },
-  { id: 'tide-current', name: 'Deep Current', suit: 'Tide', kind: 'Strike', cost: 3, value: 5, text: 'Deal 5 damage.' },
-  { id: 'tide-surge', name: 'Moonlit Surge', suit: 'Tide', kind: 'Strike', cost: 5, value: 9, text: 'Deal 9 damage.' },
-  { id: 'tide-wall', name: 'Stillwater Wall', suit: 'Tide', kind: 'Guard', cost: 1, value: 5, text: 'Gain 5 block.' },
-  { id: 'tide-undertow', name: 'Undertow', suit: 'Tide', kind: 'Trick', cost: 2, value: 1, text: 'Reflect the next hit back.' },
-  { id: 'tide-charm', name: 'Driftwood Charm', suit: 'Tide', kind: 'Trick', cost: 1, value: 1, text: 'Draw 1 card.' },
-  // ---- Gale (green, spiral): cheap strikes, quick tricks. ----
-  { id: 'gale-rush', name: 'Gale Rush', suit: 'Gale', kind: 'Strike', cost: 1, value: 3, text: 'Deal 3 damage.' },
-  { id: 'gale-kite', name: 'Storm Kite', suit: 'Gale', kind: 'Strike', cost: 3, value: 6, text: 'Deal 6 damage.' },
-  { id: 'gale-hymn', name: 'Hurricane Hymn', suit: 'Gale', kind: 'Strike', cost: 4, value: 7, text: 'Deal 7 damage.' },
-  { id: 'gale-aegis', name: 'Windward Aegis', suit: 'Gale', kind: 'Guard', cost: 2, value: 5, text: 'Gain 5 block.' },
-  { id: 'gale-snatch', name: 'Zephyr Snatch', suit: 'Gale', kind: 'Trick', cost: 2, value: 1, text: 'Steal 1 ink from the Baron.' },
-  { id: 'gale-tailwind', name: 'Tailwind', suit: 'Gale', kind: 'Trick', cost: 2, value: 2, text: 'Draw 2 cards.' },
-  // ---- Stone (amber, diamond): neutral, heavy, unhurried. ----
-  { id: 'stone-pebble', name: 'Pebble Pact', suit: 'Stone', kind: 'Strike', cost: 1, value: 3, text: 'Deal 3 damage.' },
-  { id: 'stone-reply', name: "Mountain's Reply", suit: 'Stone', kind: 'Strike', cost: 3, value: 6, text: 'Deal 6 damage.' },
-  { id: 'stone-avalanche', name: 'Avalanche Verse', suit: 'Stone', kind: 'Strike', cost: 5, value: 10, text: 'Deal 10 damage.' },
-  { id: 'stone-bastion', name: 'Granite Bastion', suit: 'Stone', kind: 'Guard', cost: 2, value: 6, text: 'Gain 6 block.' },
-  { id: 'stone-keystone', name: 'Keystone', suit: 'Stone', kind: 'Trick', cost: 2, value: 1, text: 'Reflect the next hit back.' },
-  { id: 'stone-quarry', name: 'Quarry Song', suit: 'Stone', kind: 'Trick', cost: 1, value: 1, text: 'Draw 1 card.' },
-];
-
-// A fresh 30-card deck: one of every card, plus a second copy of the six
-// cheapest strikes so early turns always have something to play.
-export const DECK_RECIPE = [
-  ...CARDS.map((card) => card.id),
-  'ember-fang', 'tide-caller', 'gale-rush', 'stone-pebble', 'ember-ward', 'tide-wall',
+  { id: 'saffron-shout', name: 'Saffron Shout', stall: 'spice', kind: 'sell', cost: 1, value: 3, text: 'A cry that pulls three patrons over.' },
+  { id: 'chilli-ember', name: 'Chilli Ember', stall: 'spice', kind: 'sell', cost: 2, value: 5, text: 'Hot enough to steal a whole queue.' },
+  { id: 'pepper-storm', name: 'Pepper Storm', stall: 'spice', kind: 'sell', cost: 4, value: 9, text: 'The whole square sneezes at once.' },
+  { id: 'cinnamon-warmth', name: 'Cinnamon Warmth', stall: 'spice', kind: 'charm', cost: 2, value: 5, text: 'Guard 5. Smells like coming home.' },
+  { id: 'paprika-promise', name: 'Paprika Promise', stall: 'spice', kind: 'haggle', cost: 1, value: 1, effect: 'draw', text: 'Draw 1. A promise kept in red.' },
+  { id: 'smoke-signal', name: 'Smoke Signal', stall: 'spice', kind: 'haggle', cost: 2, value: 1, effect: 'steal', text: 'Steal 1 coin from the rival till.' },
+  { id: 'silk-ribbon', name: 'Silk Ribbon', stall: 'silk', kind: 'sell', cost: 1, value: 3, text: 'It shimmers. They follow.' },
+  { id: 'velvet-veil', name: 'Velvet Veil', stall: 'silk', kind: 'sell', cost: 3, value: 7, text: 'Seven patrons, veiled and won.' },
+  { id: 'brocade-banner', name: 'Brocade Banner', stall: 'silk', kind: 'sell', cost: 5, value: 11, text: 'A banner the whole market can read.' },
+  { id: 'satin-screen', name: 'Satin Screen', stall: 'silk', kind: 'charm', cost: 2, value: 6, text: 'Guard 6. Soft, but it holds.' },
+  { id: 'thread-bargain', name: 'Thread Bargain', stall: 'silk', kind: 'haggle', cost: 1, value: 1, effect: 'draw', text: 'Draw 1. One thread, one deal.' },
+  { id: 'mirror-scarf', name: 'Mirror Scarf', stall: 'silk', kind: 'haggle', cost: 3, value: 0, effect: 'reflect', text: 'Reflect the next hit back at her.' },
+  { id: 'brass-bell', name: 'Brass Bell', stall: 'brass', kind: 'sell', cost: 1, value: 4, text: 'One ring, four patrons turn.' },
+  { id: 'copper-kettle', name: 'Copper Kettle', stall: 'brass', kind: 'sell', cost: 2, value: 5, text: 'Whistles a queue into being.' },
+  { id: 'gilded-gong', name: 'Gilded Gong', stall: 'brass', kind: 'sell', cost: 4, value: 10, text: 'The gong empties her stall.' },
+  { id: 'iron-shutter', name: 'Iron Shutter', stall: 'brass', kind: 'charm', cost: 3, value: 8, text: 'Guard 8. Nothing gets through.' },
+  { id: 'coin-count', name: 'Coin Count', stall: 'brass', kind: 'haggle', cost: 1, value: 1, effect: 'draw', text: 'Draw 1. Count twice, deal once.' },
+  { id: 'brass-knuckles', name: 'Brass Knuckles', stall: 'brass', kind: 'haggle', cost: 2, value: 2, effect: 'steal', text: 'Steal 2 coins from the rival till.' },
+  { id: 'mint-sprig', name: 'Mint Sprig', stall: 'leaf', kind: 'sell', cost: 1, value: 3, text: 'Fresh as morning, sharp as noon.' },
+  { id: 'tea-ceremony', name: 'Tea Ceremony', stall: 'leaf', kind: 'sell', cost: 3, value: 7, text: 'Slow pour, seven patrons stay.' },
+  { id: 'herb-garden', name: 'Herb Garden', stall: 'leaf', kind: 'sell', cost: 5, value: 12, text: 'Twelve patrons, grown not bought.' },
+  { id: 'hedge-wall', name: 'Hedge Wall', stall: 'leaf', kind: 'charm', cost: 2, value: 6, text: 'Guard 6. Green and stubborn.' },
+  { id: 'seed-packet', name: 'Seed Packet', stall: 'leaf', kind: 'haggle', cost: 1, value: 1, effect: 'draw', text: 'Draw 1. Plant it, watch it grow.' },
+  { id: 'basil-bluff', name: 'Basil Bluff', stall: 'leaf', kind: 'haggle', cost: 2, value: 1, effect: 'steal', text: 'Steal 1 coin. She never notices.' },
 ];
 
 export function cardById(id) {
-  return CARDS.find((card) => card.id === id) ?? null;
+  return CARDS.find((c) => c.id === id) ?? null;
+}
+
+// A deck is two copies of the whole market, shuffled at duel start.
+export function buildDeckList() {
+  return [...CARDS, ...CARDS];
 }

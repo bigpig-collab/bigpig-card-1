@@ -1,80 +1,86 @@
-// TIDEBOUND — mouse and keyboard. One job: turn presses into actions.
-// The renderer owns the hitboxes; input only reports what was clicked or
-// pressed, and main.js decides what it means.
-export const ACTION_CONFIRM = 1;
-export const ACTION_END_TURN = 2;
-export const ACTION_PAUSE = 4;
-export const ACTION_RESTART = 8;
-export const ACTION_MUTE = 16;
+// BRASS BAZAAR — mouse and keyboard. One job: turn clicks and keys into
+// game actions, and report what the pointer is hovering for the renderer.
+import { canPlay, playCard } from './rules.js';
+import { sfx, setMuted, isMuted } from './audio.js';
 
-export function createInput(canvas) {
-  const state = {
-    mouse: { x: -1, y: -1, clicked: false, down: false },
-    keys: new Set(),
-    actions: 0,
-    cardKey: -1,
-  };
+export function createInput(canvas, getGame, hooks) {
+  const input = { hover: null, mouse: { x: -1, y: -1 } };
 
-  function toLocal(event) {
+  function canvasPos(event) {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / Math.max(1, rect.width);
-    const scaleY = canvas.height / Math.max(1, rect.height);
-    return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    };
   }
 
-  canvas.addEventListener('pointermove', (event) => {
-    const point = toLocal(event);
-    state.mouse.x = point.x;
-    state.mouse.y = point.y;
+  canvas.addEventListener('mousemove', (event) => {
+    input.mouse = canvasPos(event);
+    input.hover = hooks.hitTest(input.mouse.x, input.mouse.y);
   });
-  canvas.addEventListener('pointerdown', (event) => {
-    const point = toLocal(event);
-    state.mouse.x = point.x;
-    state.mouse.y = point.y;
-    state.mouse.down = true;
-    state.mouse.clicked = true;
-  });
-  canvas.addEventListener('pointerup', () => {
-    state.mouse.down = false;
-  });
-  canvas.addEventListener('pointerleave', () => {
-    state.mouse.x = -1;
-    state.mouse.y = -1;
-    state.mouse.down = false;
+
+  canvas.addEventListener('click', (event) => {
+    const pos = canvasPos(event);
+    const hit = hooks.hitTest(pos.x, pos.y);
+    if (!hit) return;
+    if (hit.type === 'card') {
+      const game = getGame();
+      const card = hit.card;
+      if (canPlay(game, card)) {
+        playCard(game, 'player', card);
+        sfx.play();
+        hooks.afterPlay();
+      }
+    } else if (hit.type === 'button') {
+      hooks.onButton(hit.id);
+    }
   });
 
   window.addEventListener('keydown', (event) => {
     if (event.repeat) return;
-    const key = event.key.toLowerCase();
-    if (key >= '1' && key <= '7') state.cardKey = Number(key) - 1;
-    else if (key === ' ') state.actions |= ACTION_END_TURN;
-    else if (key === 'enter') state.actions |= ACTION_CONFIRM;
-    else if (key === 'p') state.actions |= ACTION_PAUSE;
-    else if (key === 'r') state.actions |= ACTION_RESTART;
-    else if (key === 'm') state.actions |= ACTION_MUTE;
-    state.keys.add(key);
-    if (key === ' ' || key.startsWith('arrow')) event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    state.keys.delete(event.key.toLowerCase());
+    const game = getGame();
+    const key = event.key;
+    if (key === 'm' || key === 'M') {
+      setMuted(!isMuted());
+      return;
+    }
+    if (key === 'p' || key === 'P') {
+      game.paused = !game.paused;
+      return;
+    }
+    if (game.screen === 'title' && (key === 'Enter' || key === ' ')) {
+      hooks.onButton('play');
+      return;
+    }
+    if ((game.screen === 'win' || game.screen === 'loss') && key === 'Enter') {
+      hooks.onButton('again');
+      return;
+    }
+    if (game.screen !== 'table' || game.paused) return;
+    if (key === 'Enter' && game.duelOver && !game.matchOver) {
+      hooks.onButton('next');
+      return;
+    }
+    if (key >= '1' && key <= '7') {
+      const idx = Number(key) - 1;
+      const card = game.player.hand[idx];
+      if (card && canPlay(game, card)) {
+        playCard(game, 'player', card);
+        sfx.play();
+        hooks.afterPlay();
+      }
+      return;
+    }
+    if (key === ' ') {
+      event.preventDefault();
+      // Route through the End Turn button path so Zinnia's timer starts.
+      hooks.onButton('end');
+      return;
+    }
+    if (key === 'r' || key === 'R') {
+      hooks.onButton('restart');
+    }
   });
 
-  return {
-    mouse: state.mouse,
-    takeActions() {
-      const actions = state.actions;
-      state.actions = 0;
-      return actions;
-    },
-    takeCardKey() {
-      const key = state.cardKey;
-      state.cardKey = -1;
-      return key;
-    },
-    takeClick() {
-      const clicked = state.mouse.clicked;
-      state.mouse.clicked = false;
-      return clicked;
-    },
-  };
+  return input;
 }

@@ -1,253 +1,287 @@
-// TIDEBOUND — the turn and combat engine. One job: the rules.
-// It owns the match state, playing a card, combos, damage, block, reflects,
-// duels and the match result. It draws nothing and hears no input.
+// BRASS BAZAAR — the rules engine. One job: turns, playing cards, combos,
+// damage, guard, duels and the match. No drawing here, no input here.
 import {
-  COUNTER_BONUS, DRAW_PER_TURN, DUELS_TO_WIN_MATCH, HARMONY_BONUS, MAX_HAND,
-  MAX_INK, MAX_LIFE, PRISM_BONUS_DRAW, PRISM_BONUS_INK, STARTING_HAND, START_INK,
-  SUITS,
+  BEATS,
+  COMBO_BAZAAR_DRAW,
+  COMBO_BAZAAR_REFUND,
+  COMBO_SET_BONUS,
+  COMBO_UNDERCUT_BONUS,
+  CROWD_RUSH_AT,
+  DRAW_PER_TURN,
+  DUELS_TO_WIN_MATCH,
+  MAX_COINS,
+  MAX_HAND,
+  RIVAL_PHASES,
+  RUSH_HOUR_BONUS,
+  START_COINS,
+  START_HAND,
+  START_PATRONS,
 } from './config.js';
-import { buildDeck, drawCards } from './deck.js';
+import { buildDeckList } from './cards.js';
+import { createRandom, drawFrom, makePile, mintUid } from './deck.js';
 
 export const PHASE_PLAYER = 'player';
-export const PHASE_BARON = 'baron';
+export const PHASE_RIVAL = 'rival';
 
-export function suitBeats(attacker, defender) {
-  if (!attacker || !defender) return false;
-  return SUITS[attacker]?.beats === defender;
-}
-
-export function createSide(random) {
+function freshSide(random) {
+  const pile = makePile(buildDeckList(), random);
+  const hand = drawFrom(pile, random, START_HAND).map((c) => ({ ...c, uid: mintUid() }));
   return {
-    life: MAX_LIFE,
-    ink: START_INK,
-    block: 0,
+    patrons: START_PATRONS,
+    coins: START_COINS,
+    maxCoins: START_COINS,
+    hand,
+    pile,
+    guard: 0,
     reflect: false,
-    deck: buildDeck(random),
-    hand: [],
-    discard: [],
   };
 }
 
-export function createGame(random) {
+export function createGame(seed = 7) {
+  const random = createRandom(seed);
   const game = {
+    seed,
     random,
+    screen: 'title',
+    duel: 1,
     turn: 1,
     phase: PHASE_PLAYER,
-    duel: 1,
-    playerDuels: 0,
-    baronDuels: 0,
-    player: createSide(random),
-    baron: createSide(random),
-    telegraph: null,
-    suitsPlayed: [],
-    played: [],
-    log: [],
+    player: freshSide(random),
+    rival: freshSide(random),
+    played: [], // cards on the table this turn, face up
+    stallsThisTurn: [],
+    bazaarDone: false,
+    crowd: 0,
+    rushHour: false,
+    chain: 0,
+    telegraph: { stall: 'spice', text: '' },
     announcement: null,
     floaters: [],
-    stats: { cardsPlayed: 0, damageDealt: 0, combos: 0, bestChain: 0, duelsPlayed: 0, comboTypes: { harmony: 0, prism: 0, counter: 0 } },
-    duelOver: null,
-    matchOver: null,
-    baronPlan: [],
-    baronWaitMs: 0,
+    log: [],
+    playerDuels: 0,
+    rivalDuels: 0,
+    duelOver: false,
+    duelWinner: null,
+    matchOver: false,
+    matchWinner: null,
+    paused: false,
+    stats: { cardsPlayed: 0, combos: 0, bestChain: 0, sells: 0, charms: 0, haggles: 0, coinsStolen: 0 },
   };
-  game.player.hand = [];
-  game.baron.hand = [];
-  drawToHand(game, game.player, STARTING_HAND);
-  drawToHand(game, game.baron, STARTING_HAND);
   return game;
+}
+
+export function rivalPhase(game) {
+  const idx = Math.min(game.duel - 1, RIVAL_PHASES.length - 1);
+  return RIVAL_PHASES[idx];
+}
+
+export function announce(game, text, big = false) {
+  game.announcement = { text, big, t: 0 };
+}
+
+export function addFloater(game, x, y, text, color) {
+  game.floaters.push({ x, y, text, color, t: 0 });
+  if (game.floaters.length > 24) game.floaters.shift();
 }
 
 export function addLog(game, text) {
   game.log.unshift(text);
-  if (game.log.length > 6) game.log.length = 6;
+  if (game.log.length > 6) game.log.pop();
 }
 
-export function announce(game, text, sub = '') {
-  game.announcement = { text, sub, ageMs: 0 };
+export function canPlay(game, card) {
+  if (game.screen !== 'table') return false;
+  if (game.phase !== PHASE_PLAYER) return false;
+  if (game.duelOver || game.matchOver) return false;
+  return game.player.coins >= card.cost;
 }
 
-export function addFloater(game, x, y, text, color) {
-  game.floaters.push({ x, y, text, color, ageMs: 0 });
-}
-
-// Draw `count` cards into a side's hand (up to MAX_HAND); any card that
-// does not fit goes to the discard pile, never vanishes. Returns the number
-// actually drawn.
-export function drawToHand(game, side, count) {
-  const drawn = drawCards(side.deck, side.discard, count, game.random);
-  const room = Math.max(0, MAX_HAND - side.hand.length);
-  side.hand.push(...drawn.slice(0, room));
-  side.discard.push(...drawn.slice(room));
-  return drawn.length;
-}
-function dealDamage(game, attacker, defender, amount, x, y) {
-  let left = amount;
-  if (defender.reflect && left > 0) {
-    defender.reflect = false;
-    addLog(game, 'Mirror! The hit bounces back.');
-    dealDamage(game, defender, attacker, left, x, y);
-    return;
+// Deal damage to a side, honouring guard first and reflect second.
+// Returns the patrons actually lost.
+export function dealDamage(game, target, amount, from) {
+  if (amount <= 0) return 0;
+  const side = target === 'player' ? game.player : game.rival;
+  if (side.reflect) {
+    side.reflect = false;
+    const back = target === 'player' ? 'rival' : 'player';
+    addLog(game, `Mirror Scarf! The hit bounces back.`);
+    return dealDamage(game, back, amount, target);
   }
-  if (defender.block > 0) {
-    const absorbed = Math.min(defender.block, left);
-    defender.block -= absorbed;
-    left -= absorbed;
-    if (absorbed > 0) addLog(game, `Block absorbs ${absorbed}.`);
+  let left = amount;
+  if (side.guard > 0) {
+    const blocked = Math.min(side.guard, left);
+    side.guard -= blocked;
+    left -= blocked;
+    if (blocked > 0) addLog(game, `${blocked} blocked by guard.`);
   }
   if (left > 0) {
-    defender.life = Math.max(0, defender.life - left);
-    addFloater(game, x, y, `-${left}`, '#ffd166');
-    if (attacker === game.player) game.stats.damageDealt += left;
+    side.patrons = Math.max(0, side.patrons - left);
+    // Floaters sit beside the patron totals, clear of the card backs.
+    const x = target === 'player' ? 300 : 980;
+    addFloater(game, x, 200, `-${left}`, '#ffd166');
   }
+  if (side.patrons <= 0) endDuel(game, from);
+  return left;
 }
 
-// --- combos -----------------------------------------------------------------
-function comboBonuses(game, card) {
-  let bonus = 0;
-  const notes = [];
-  const sameSuit = game.suitsPlayed.filter((suit) => suit === card.suit).length;
-  if (sameSuit >= 1) {
-    bonus += HARMONY_BONUS;
-    notes.push(`HARMONY +${HARMONY_BONUS}`);
+function endDuel(game, winner) {
+  if (game.duelOver) return;
+  game.duelOver = true;
+  game.duelWinner = winner;
+  if (winner === 'player') {
+    game.playerDuels += 1;
+    announce(game, 'DUEL WON!', true);
+    addLog(game, 'You win the duel — her patrons come to you.');
+  } else {
+    game.rivalDuels += 1;
+    announce(game, 'DUEL LOST', true);
+    addLog(game, 'Zinnia wins the duel — your patrons drift away.');
   }
-  const distinct = new Set([...game.suitsPlayed, card.suit]).size;
-  if (game.suitsPlayed.length >= 2 && distinct >= 3) {
-    notes.push(`PRISM +${PRISM_BONUS_DRAW} card, +${PRISM_BONUS_INK} ink`);
-  }
-  if (game.telegraph && suitBeats(card.suit, game.telegraph)) {
-    bonus += COUNTER_BONUS;
-    notes.push(`COUNTER +${COUNTER_BONUS}`);
-  }
-  return { bonus, notes, prism: game.suitsPlayed.length >= 2 && distinct >= 3 };
-}
-
-// --- playing a card ---------------------------------------------------------
-export function canPlay(game, side, card) {
-  return game.phase === PHASE_PLAYER && side === game.player && card && side.ink >= card.cost;
-}
-
-export function playCard(game, side, handIndex) {
-  const card = side.hand[handIndex];
-  if (!card || side.ink < card.cost) return null;
-  side.ink -= card.cost;
-  side.hand.splice(handIndex, 1);
-  side.discard.push(card);
-
-  const isPlayer = side === game.player;
-  const foe = isPlayer ? game.baron : game.player;
-  const { bonus, notes, prism } = isPlayer ? comboBonuses(game, card) : { bonus: 0, notes: [], prism: false };
-  if (isPlayer) {
-    game.suitsPlayed.push(card.suit);
-    const chain = game.suitsPlayed.length;
-    if (chain > game.stats.bestChain) game.stats.bestChain = chain;
-  }
-
-  let effectText = '';
-  if (card.kind === 'Strike') {
-    const damage = card.value + bonus;
-    dealDamage(game, side, foe, damage, 640, 470);
-    effectText = `${card.name} deals ${damage}.`;
-  } else if (card.kind === 'Guard') {
-    side.block += card.value + bonus;
-    effectText = `${card.name} gains ${card.value + bonus} block.`;
-  } else if (card.kind === 'Trick') {
-    if (card.id.includes('thief') || card.id.includes('snatch')) {
-      const stolen = Math.min(1, foe.ink);
-      foe.ink -= stolen;
-      effectText = `${card.name} steals ${stolen} ink.`;
-    } else if (card.id.includes('undertow') || card.id.includes('keystone')) {
-      side.reflect = true;
-      effectText = `${card.name}: the next hit is reflected.`;
-    } else {
-      const count = drawToHand(game, side, card.value);
-      effectText = `${card.name} draws ${count}.`;
-    }
-  }
-
-  if (prism && isPlayer) {
-    side.ink = Math.min(MAX_INK, side.ink + PRISM_BONUS_INK);
-    drawToHand(game, side, PRISM_BONUS_DRAW);
-  }
-  if (notes.length > 0) {
-    game.stats.combos += notes.length;
-    for (const note of notes) {
-      if (note.startsWith('HARMONY')) game.stats.comboTypes.harmony += 1;
-      else if (note.startsWith('PRISM')) game.stats.comboTypes.prism += 1;
-      else if (note.startsWith('COUNTER')) game.stats.comboTypes.counter += 1;
-    }
-    announce(game, notes.join('  ·  '), effectText);
-  }
-  addLog(game, effectText);
-  game.played.push({ card, by: isPlayer ? 'player' : 'baron', bonus, ageMs: 0 });
-  if (game.played.length > 4) game.played.shift();
-  game.stats.cardsPlayed += 1;
-  checkDuelEnd(game);
-  return { card, bonus, notes, prism };
-}
-
-// --- turns ------------------------------------------------------------------
-export function startPlayerTurn(game) {
-  game.phase = PHASE_PLAYER;
-  game.turn += 1;
-  const side = game.player;
-  side.ink = Math.min(MAX_INK, side.ink + 1);
-  side.block = 0;
-  const drawn = drawToHand(game, side, DRAW_PER_TURN);
-  game.suitsPlayed = [];
-  game.played = [];
-  addLog(game, `Turn ${game.turn}: you draw ${drawn}, ink ${side.ink}.`);
-}
-
-export function endPlayerTurn(game) {
-  if (game.phase !== PHASE_PLAYER || game.matchOver) return;
-  game.phase = PHASE_BARON;
-  game.baronWaitMs = 500;
-  game.baronPlan = null;
-}
-
-export function baronDrawAndStart(game) {
-  const side = game.baron;
-  side.ink = Math.min(MAX_INK, side.ink + 1);
-  side.block = 0;
-  drawToHand(game, side, DRAW_PER_TURN);
-}
-
-// --- duel and match end -----------------------------------------------------
-export function checkDuelEnd(game) {
-  if (game.duelOver || game.matchOver) return;
-  if (game.player.life <= 0 || game.baron.life <= 0) {
-    const playerWon = game.baron.life <= 0;
-    game.duelOver = playerWon ? 'player' : 'baron';
-    if (playerWon) game.playerDuels += 1;
-    else game.baronDuels += 1;
-    game.stats.duelsPlayed += 1;
-    announce(game, playerWon ? 'DUEL WON' : 'DUEL LOST', playerWon ? 'The Baron’s lantern dims.' : 'Your light falters.');
+  if (game.playerDuels >= DUELS_TO_WIN_MATCH || game.rivalDuels >= DUELS_TO_WIN_MATCH) {
+    game.matchOver = true;
+    game.matchWinner = winner;
+    game.screen = winner === 'player' ? 'win' : 'loss';
   }
 }
 
 export function nextDuel(game) {
-  if (game.playerDuels >= DUELS_TO_WIN_MATCH) {
-    game.matchOver = 'player';
-    return;
-  }
-  if (game.baronDuels >= DUELS_TO_WIN_MATCH) {
-    game.matchOver = 'baron';
-    return;
-  }
   game.duel += 1;
-  const fresh = createGame(game.random);
-  game.player = fresh.player;
-  game.baron = fresh.baron;
   game.turn = 1;
   game.phase = PHASE_PLAYER;
-  game.duelOver = null;
-  game.suitsPlayed = [];
+  game.player = freshSide(game.random);
+  game.rival = freshSide(game.random);
   game.played = [];
+  game.stallsThisTurn = [];
+  game.bazaarDone = false;
+  game.crowd = 0;
+  game.rushHour = false;
+  game.chain = 0;
+  game.duelOver = false;
+  game.duelWinner = null;
+  game.floaters = [];
   game.log = [];
-  addLog(game, `Duel ${game.duel} begins — first to ${DUELS_TO_WIN_MATCH} duels takes the match.`);
+  announce(game, `DUEL ${game.duel} — ${rivalPhase(game).title}`, true);
+  addLog(game, rivalPhase(game).taunt);
 }
 
-export function restartMatch(game) {
-  const fresh = createGame(game.random);
-  Object.assign(game, fresh, { playerDuels: 0, baronDuels: 0, duel: 1, matchOver: null });
+export function startPlayerTurn(game) {
+  game.phase = PHASE_PLAYER;
+  game.turn += 1;
+  const p = game.player;
+  p.maxCoins = Math.min(MAX_COINS, p.maxCoins + 1);
+  p.coins = p.maxCoins;
+  p.guard = 0;
+  // The counter is NOT cleared here: Zinnia's cards stay visible while the
+  // player answers them, so the table always shows the last exchange.
+  game.stallsThisTurn = [];
+  game.bazaarDone = false;
+  game.chain = 0;
+  const drawn = drawFrom(p.pile, game.random, DRAW_PER_TURN).map((c) => ({ ...c, uid: mintUid() }));
+  for (const c of drawn) {
+    if (p.hand.length < MAX_HAND) p.hand.push(c);
+    else p.pile.discard.push(c);
+  }
+  addLog(game, `Turn ${game.turn}: you draw ${drawn.length}, ${p.coins} coins.`);
+}
+
+// Play one card from a side's hand. Returns true when the card was played.
+export function playCard(game, who, card) {
+  const side = who === 'player' ? game.player : game.rival;
+  const foe = who === 'player' ? game.rival : game.player;
+  const idx = side.hand.findIndex((c) => c.uid === card.uid);
+  if (idx < 0) return false;
+  if (side.coins < card.cost) return false;
+  side.coins -= card.cost;
+  side.hand.splice(idx, 1);
+  side.pile.discard.push(card);
+  game.played.push({ ...card, who });
+  game.stats.cardsPlayed += 1;
+  game.chain += 1;
+  game.stats.bestChain = Math.max(game.stats.bestChain, game.chain);
+
+  let bonus = 0;
+  const comboNames = [];
+
+  if (who === 'player') {
+    // Stall Set: second card of the same stall in one turn.
+    const sameStall = game.stallsThisTurn.filter((s) => s === card.stall).length;
+    if (sameStall === 1) {
+      bonus += COMBO_SET_BONUS;
+      comboNames.push('STALL SET +2');
+    }
+    // Undercut: the stall that beats what Zinnia telegraphed.
+    if (BEATS[card.stall] === game.telegraph.stall) {
+      bonus += COMBO_UNDERCUT_BONUS;
+      comboNames.push('UNDERCUT +3');
+    }
+    // Grand Bazaar: three different stalls in one turn.
+    const distinct = new Set([...game.stallsThisTurn, card.stall]).size;
+    if (distinct >= 3 && !game.bazaarDone) {
+      game.bazaarDone = true;
+      comboNames.push('GRAND BAZAAR!');
+      const drawn = drawFrom(side.pile, game.random, COMBO_BAZAAR_DRAW).map((c) => ({ ...c, uid: mintUid() }));
+      for (const c of drawn) if (side.hand.length < MAX_HAND) side.hand.push(c);
+      side.coins = Math.min(side.maxCoins, side.coins + COMBO_BAZAAR_REFUND);
+      addLog(game, 'Grand Bazaar! Draw 1, refund 1 coin.');
+    }
+    game.stallsThisTurn.push(card.stall);
+    // The crowd gathers: every card you play fills the square.
+    game.crowd += 1;
+    if (game.crowd >= CROWD_RUSH_AT) {
+      game.crowd = 0;
+      game.rushHour = true;
+      comboNames.push('RUSH HOUR!');
+      announce(game, 'RUSH HOUR! Next Sell +4', true);
+      addLog(game, 'Rush Hour! The square is packed — next Sell +4.');
+    }
+    if (comboNames.length > 0) {
+      game.stats.combos += 1;
+      announce(game, comboNames.join('  '), comboNames.length > 1);
+    }
+  } else {
+    // Zinnia's phase bonus: her Sells hit harder as she climbs.
+    if (card.kind === 'sell') bonus += rivalPhase(game).bonus;
+  }
+
+  if (card.kind === 'sell') {
+    let dmg = card.value + bonus;
+    if (who === 'player' && game.rushHour) {
+      dmg += RUSH_HOUR_BONUS;
+      game.rushHour = false;
+      addLog(game, `Rush Hour spends: +${RUSH_HOUR_BONUS} damage.`);
+    }
+    game.stats.sells += 1;
+    addLog(game, `${who === 'player' ? 'You sell' : 'Zinnia sells'} ${card.name} for ${dmg}.`);
+    dealDamage(game, who === 'player' ? 'rival' : 'player', dmg, who);
+  } else if (card.kind === 'charm') {
+    const guard = card.value + bonus;
+    side.guard += guard;
+    game.stats.charms += 1;
+    addFloater(game, who === 'player' ? 300 : 980, 220, `+${guard} guard`, '#8fd6a0');
+    addLog(game, `${who === 'player' ? 'You charm' : 'Zinnia charms'} ${card.name}: +${guard} guard.`);
+  } else if (card.kind === 'haggle') {
+    game.stats.haggles += 1;
+    if (card.effect === 'draw') {
+      const drawn = drawFrom(side.pile, game.random, card.value).map((c) => ({ ...c, uid: mintUid() }));
+      for (const c of drawn) if (side.hand.length < MAX_HAND) side.hand.push(c);
+      addLog(game, `${card.name}: draw ${drawn.length}.`);
+    } else if (card.effect === 'steal') {
+      const taken = Math.min(card.value, foe.coins);
+      foe.coins -= taken;
+      side.coins = Math.min(side.maxCoins, side.coins + taken);
+      if (who === 'player') game.stats.coinsStolen += taken;
+      addFloater(game, who === 'player' ? 980 : 300, 220, `-${taken} coins`, '#ffd166');
+      addLog(game, `${card.name}: steal ${taken} coin${taken === 1 ? '' : 's'}.`);
+    } else if (card.effect === 'reflect') {
+      side.reflect = true;
+      addLog(game, `${card.name}: the next hit bounces back.`);
+    }
+  }
+  return true;
+}
+
+export function endPlayerTurn(game) {
+  if (game.phase !== PHASE_PLAYER || game.duelOver || game.matchOver) return;
+  game.played = [];
+  game.phase = PHASE_RIVAL;
 }

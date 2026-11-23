@@ -1,694 +1,608 @@
-// TIDEBOUND — the painter. One job: draw everything on the canvas.
-// Title, table, win and loss screens; cards, HUD, panels, announcements,
-// floating damage and the lantern flourish. It never changes game state.
-import { GAME_SUBTITLE, GAME_TITLE, MAX_LIFE, SUITS, VIEW_H, VIEW_W } from './config.js';
+// BRASS BAZAAR — the renderer. One job: draw everything on one canvas.
+// Top bar (win/lose + score), side panels (goals, crowd, telegraph, log),
+// the table (both hands, played cards, floaters), and the title/win/loss
+// screens. Colour AND shape code every stall, never text alone.
+import {
+  CANVAS_H,
+  CANVAS_W,
+  CROWD_RUSH_AT,
+  DUELS_TO_WIN_MATCH,
+  GAME_SUBTITLE,
+  GAME_TITLE,
+  PLAYER_NAME,
+  RIVAL_NAME,
+  RIVAL_PHASES,
+  STALLS,
+  STALL_ORDER,
+} from './config.js';
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_TABLE = 'table';
-export const SCREEN_WIN = 'win';
-export const SCREEN_LOSS = 'loss';
-export const SCREEN_PAUSED = 'paused';
+const CARD_W = 140;
+const CARD_H = 196;
+const BACK_W = 84;
+const BACK_H = 118;
+const HAND_Y = 556;
+const PLAYED_Y = 308;
+const BACKS_Y = 172;
 
-const GOLD = '#ffd166';
-const GOLD_DIM = '#c9a227';
-const INK_TEXT = '#1d2a30';
-const PARCHMENT = '#f7ead0';
-const PANEL = 'rgba(4, 34, 42, 0.82)';
-const PANEL_LINE = 'rgba(201, 162, 39, 0.55)';
+// Live hit-test layout, rebuilt every frame for input.js.
+export const layout = { cards: [], buttons: [] };
 
-function rr(ctx, x, y, w, h, r) {
-  const radius = Math.min(r, w / 2, h / 2);
+function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + w, y, x + w, y + h, radius);
-  ctx.arcTo(x + w, y + h, x, y + h, radius);
-  ctx.arcTo(x, y + h, x, y, radius);
-  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
 
-function text(ctx, str, x, y, size, color, align = 'left', font = '600', family = 'system-ui, sans-serif') {
+function text(ctx, str, x, y, size, color, weight = 'bold', align = 'left') {
   ctx.fillStyle = color;
-  ctx.font = `${font} ${size}px ${family}`;
+  ctx.font = `${weight} ${size}px Georgia, 'Times New Roman', serif`;
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   ctx.fillText(str, x, y);
 }
 
-// --- suit shapes: colour AND shape, never text alone ------------------------
-export function drawSuitShape(ctx, suitName, cx, cy, size, color) {
-  const suit = SUITS[suitName];
-  if (!suit) return;
+// --- stall shapes -----------------------------------------------------------
+export function drawStallShape(ctx, shape, cx, cy, size, color) {
   ctx.save();
   ctx.fillStyle = color;
   ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(2, size * 0.09);
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  const s = size;
-  if (suit.shape === 'flame') {
+  ctx.lineWidth = Math.max(2, size / 12);
+  if (shape === 'star') {
     ctx.beginPath();
-    ctx.moveTo(cx, cy - s * 0.5);
-    ctx.bezierCurveTo(cx + s * 0.42, cy - s * 0.1, cx + s * 0.34, cy + s * 0.34, cx, cy + s * 0.42);
-    ctx.bezierCurveTo(cx - s * 0.34, cy + s * 0.34, cx - s * 0.42, cy - s * 0.1, cx, cy - s * 0.5);
-    ctx.fill();
-    ctx.fillStyle = '#fff3c4';
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - s * 0.08);
-    ctx.bezierCurveTo(cx + s * 0.18, cy + s * 0.1, cx + s * 0.12, cy + s * 0.3, cx, cy + s * 0.3);
-    ctx.bezierCurveTo(cx - s * 0.12, cy + s * 0.3, cx - s * 0.18, cy + s * 0.1, cx, cy - s * 0.08);
-    ctx.fill();
-  } else if (suit.shape === 'wave') {
-    for (let row = -1; row <= 1; row += 1) {
-      ctx.beginPath();
-      const y = cy + row * s * 0.26;
-      ctx.moveTo(cx - s * 0.45, y);
-      ctx.quadraticCurveTo(cx - s * 0.22, y - s * 0.24, cx, y);
-      ctx.quadraticCurveTo(cx + s * 0.22, y + s * 0.24, cx + s * 0.45, y);
-      ctx.stroke();
+    for (let i = 0; i < 10; i += 1) {
+      const r = i % 2 === 0 ? size : size * 0.45;
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
-  } else if (suit.shape === 'spiral') {
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === 'diamond') {
     ctx.beginPath();
-    for (let a = 0; a <= Math.PI * 4.4; a += 0.18) {
-      const r = (a / (Math.PI * 4.4)) * s * 0.48;
-      const px = cx + Math.cos(a) * r;
-      const py = cy + Math.sin(a) * r;
-      if (a === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+    ctx.moveTo(cx, cy - size);
+    ctx.lineTo(cx + size * 0.75, cy);
+    ctx.lineTo(cx, cy + size);
+    ctx.lineTo(cx - size * 0.75, cy);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === 'cog') {
+    for (let i = 0; i < 8; i += 1) {
+      const a = (i * Math.PI) / 4;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(a);
+      ctx.fillRect(-size * 0.14, -size * 1.15, size * 0.28, size * 0.42);
+      ctx.restore();
     }
+    ctx.beginPath();
+    ctx.arc(cx, cy, size * 0.78, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#2a1a2e';
+    ctx.beginPath();
+    ctx.arc(cx, cy, size * 0.34, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (shape === 'leaf') {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, size * 0.55, size, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#f7ead0';
+    ctx.lineWidth = Math.max(2, size / 10);
+    ctx.beginPath();
+    ctx.moveTo(cx - size * 0.4, cy + size * 0.55);
+    ctx.lineTo(cx + size * 0.4, cy - size * 0.55);
     ctx.stroke();
-  } else {
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - s * 0.5);
-    ctx.lineTo(cx + s * 0.38, cy);
-    ctx.lineTo(cx, cy + s * 0.5);
-    ctx.lineTo(cx - s * 0.38, cy);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - s * 0.28);
-    ctx.lineTo(cx + s * 0.18, cy);
-    ctx.lineTo(cx, cy + s * 0.28);
-    ctx.lineTo(cx - s * 0.18, cy);
-    ctx.closePath();
-    ctx.fill();
   }
   ctx.restore();
 }
 
-function drawLantern(ctx, x, y, size, lit, color = GOLD) {
+function coinIcon(ctx, x, y, r, label) {
   ctx.save();
-  if (lit) {
-    const glow = ctx.createRadialGradient(x, y, 2, x, y, size * 1.1);
-    glow.addColorStop(0, 'rgba(255, 209, 102, 0.55)');
-    glow.addColorStop(1, 'rgba(255, 209, 102, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(x - size * 1.2, y - size * 1.2, size * 2.4, size * 2.4);
-  }
-  ctx.fillStyle = lit ? color : '#3a4a52';
-  ctx.strokeStyle = lit ? '#8a6d1f' : '#22303a';
-  ctx.lineWidth = 1.5;
-  rr(ctx, x - size * 0.32, y - size * 0.42, size * 0.64, size * 0.84, size * 0.14);
+  ctx.fillStyle = '#e0a83c';
+  ctx.strokeStyle = '#7a5510';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = lit ? '#fff3c4' : '#202b31';
-  ctx.fillRect(x - size * 0.2, y - size * 0.26, size * 0.4, size * 0.5);
-  ctx.fillStyle = lit ? '#8a6d1f' : '#22303a';
-  ctx.fillRect(x - size * 0.16, y - size * 0.52, size * 0.32, size * 0.1);
-  ctx.fillRect(x - size * 0.16, y + size * 0.42, size * 0.32, size * 0.1);
-  ctx.restore();
-}
-
-function drawInkDrop(ctx, x, y, size, filled, color = '#7ec8e3') {
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(x, y - size * 0.55);
-  ctx.bezierCurveTo(x + size * 0.42, y - size * 0.05, x + size * 0.36, y + size * 0.42, x, y + size * 0.42);
-  ctx.bezierCurveTo(x - size * 0.36, y + size * 0.42, x - size * 0.42, y - size * 0.05, x, y - size * 0.55);
-  ctx.closePath();
-  if (filled) {
-    ctx.fillStyle = color;
-    ctx.fill();
-  } else {
-    ctx.strokeStyle = 'rgba(126, 200, 227, 0.5)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
+  ctx.fillStyle = '#7a5510';
+  ctx.font = `bold ${Math.round(r)}px Georgia, serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y + 1);
   ctx.restore();
 }
 
 // --- cards ------------------------------------------------------------------
 function drawCardFace(ctx, card, x, y, w, h, opts = {}) {
-  const suit = SUITS[card.suit];
-  const affordable = opts.affordable !== false;
-  const hover = opts.hover === true;
+  const stall = STALLS[card.stall];
+  const playable = opts.playable !== false;
+  const hovered = !!opts.hovered;
   ctx.save();
-  if (hover) ctx.translate(0, -12);
-  ctx.shadowColor = 'rgba(0,0,0,0.55)';
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 5;
-  rr(ctx, x, y, w, h, 10);
-  ctx.fillStyle = PARCHMENT;
+  if (hovered) ctx.translate(0, -10);
+  ctx.shadowColor = 'rgba(0,0,0,0.5)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 4;
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fillStyle = playable ? '#f7ead0' : '#cbb98f';
   ctx.fill();
   ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = affordable ? suit.color : '#8a94a0';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = stall.color;
   ctx.stroke();
-  rr(ctx, x + 4, y + 4, w - 8, h - 8, 8);
-  ctx.strokeStyle = 'rgba(29,42,48,0.25)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  // Cost pips (ink drops) top-left.
-  for (let n = 0; n < card.cost; n += 1) {
-    drawInkDrop(ctx, x + 14 + n * 13, y + 16, 9, true, '#2f7ea8');
+  // Cost pips (coins) across the top.
+  for (let i = 0; i < card.cost; i += 1) {
+    coinIcon(ctx, x + 16 + i * 20, y + 16, 9, '');
   }
-  // Suit shape + big value centre.
-  drawSuitShape(ctx, card.suit, x + w / 2, y + h * 0.36, Math.min(w * 0.42, 52), suit.color);
-  text(ctx, String(card.value), x + w / 2, y + h * 0.62, Math.min(44, w * 0.36), INK_TEXT, 'center', '800', 'Georgia, serif');
-  text(ctx, card.kind.toUpperCase(), x + w / 2, y + h * 0.76, 11, suit.dark, 'center', '800');
-  text(ctx, card.name, x + w / 2, y + h * 0.86, card.name.length > 13 ? 10.5 : 12, INK_TEXT, 'center', '700');
-  // Suit name small at the top, under the pips.
-  text(ctx, card.suit.toUpperCase(), x + w / 2, y + 15, 10, suit.dark, 'center', '800');
+  // Kind tag.
+  text(ctx, card.kind.toUpperCase(), x + w - 10, y + 16, 11, stall.dark, 'bold', 'right');
+  // Big stall shape + big value numeral in the middle.
+  drawStallShape(ctx, stall.shape, x + w / 2, y + h * 0.42, 30, stall.color);
+  text(ctx, String(card.value), x + w / 2, y + h * 0.42, 40, '#2a1a2e', 'bold', 'center');
+  // Name band.
+  ctx.fillStyle = stall.dark;
+  roundRect(ctx, x + 8, y + h - 62, w - 16, 24, 6);
+  ctx.fill();
+  text(ctx, card.name, x + w / 2, y + h - 50, 13, '#f7ead0', 'bold', 'center');
+  // Flavour line, two lines max.
+  ctx.fillStyle = '#4a3444';
+  ctx.font = '11px Georgia, serif';
+  ctx.textAlign = 'center';
+  const words = card.text.split(' ');
+  let line = '';
+  let ly = y + h - 26;
+  for (const word of words) {
+    if ((line + ' ' + word).trim().length > 22) {
+      ctx.fillText(line.trim(), x + w / 2, ly);
+      line = word;
+      ly += 12;
+      if (ly > y + h - 8) break;
+    } else line += ' ' + word;
+  }
+  if (line.trim()) ctx.fillText(line.trim(), x + w / 2, ly);
   ctx.restore();
 }
 
 function drawCardBack(ctx, x, y, w, h) {
   ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.5)';
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 4;
-  rr(ctx, x, y, w, h, 9);
-  ctx.fillStyle = '#12333d';
+  roundRect(ctx, x, y, w, h, 8);
+  ctx.fillStyle = '#4a2340';
   ctx.fill();
-  ctx.shadowColor = 'transparent';
-  ctx.strokeStyle = GOLD_DIM;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#e0a83c';
   ctx.stroke();
-  rr(ctx, x + 6, y + 6, w - 12, h - 12, 6);
-  ctx.strokeStyle = 'rgba(255,209,102,0.5)';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  drawLantern(ctx, x + w / 2, y + h / 2, 26, true);
+  drawStallShape(ctx, 'cog', x + w / 2, y + h / 2, 20, '#e0a83c');
   ctx.restore();
 }
 
-function drawButton(ctx, box, label, enabled, sub = '') {
-  ctx.save();
-  rr(ctx, box.x, box.y, box.w, box.h, 10);
-  ctx.fillStyle = enabled ? '#b8860b' : '#3a4a52';
-  ctx.fill();
-  ctx.strokeStyle = enabled ? GOLD : '#55636c';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  text(ctx, label, box.x + box.w / 2, box.y + box.h / 2 - (sub ? 8 : 0), 17, enabled ? '#fff8e1' : '#9fb0ba', 'center', '800');
-  if (sub) text(ctx, sub, box.x + box.w / 2, box.y + box.h / 2 + 13, 11, enabled ? '#ffe9b8' : '#8a99a3', 'center', '600');
-  ctx.restore();
+// --- table pieces -----------------------------------------------------------
+function drawTopBar(ctx, game) {
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.85)';
+  ctx.fillRect(0, 0, CANVAS_W, 64);
+  ctx.fillStyle = '#e0a83c';
+  ctx.fillRect(0, 64, CANVAS_W, 3);
+  text(ctx, GAME_TITLE, 16, 24, 26, '#f7ead0', 'bold');
+  text(ctx, GAME_SUBTITLE, 16, 48, 13, '#e0a83c', 'normal');
+  text(ctx, `WIN: take ${DUELS_TO_WIN_MATCH} duels   •   LOSE: your patrons hit 0`, 640, 24, 15, '#ffd166', 'bold', 'center');
+  text(ctx, `DUEL ${game.duel}  •  TURN ${game.turn}`, 640, 48, 13, '#cbb98f', 'normal', 'center');
+  // Match score as duels won.
+  const px = 1080;
+  text(ctx, `YOU ${game.playerDuels} — ${game.rivalDuels} ZINNIA`, px, 24, 18, '#f7ead0', 'bold', 'center');
+  const phase = RIVAL_PHASES[Math.min(game.duel - 1, RIVAL_PHASES.length - 1)];
+  text(ctx, phase.title, px, 48, 13, '#e0a83c', 'normal', 'center');
 }
 
-export function createRenderer(canvas) {
-  const ctx = canvas.getContext('2d');
-  const layout = {
-    handCards: [], endTurn: null, playButton: null, retryButton: null,
-    nextDuelButton: null, restartButton: null, muteButton: null,
-  };
-  let particles = [];
-  let lastScreen = '';
-
-  function background(timeMs) {
-    const grad = ctx.createLinearGradient(0, 0, 0, VIEW_H);
-    grad.addColorStop(0, '#082e3a');
-    grad.addColorStop(0.55, '#0a3d47');
-    grad.addColorStop(1, '#062a33');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    // Stars / drifting lantern sparks.
-    ctx.save();
-    for (let i = 0; i < 46; i += 1) {
-      const sx = (i * 173.3) % VIEW_W;
-      const sy = (i * 97.7) % 300;
-      const tw = 0.35 + 0.3 * Math.sin(timeMs / 900 + i * 1.7);
-      ctx.globalAlpha = Math.max(0.08, tw);
-      ctx.fillStyle = '#ffe9b8';
-      ctx.beginPath();
-      ctx.arc(sx, sy, i % 5 === 0 ? 2.2 : 1.2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-    // Slow waves along the bottom.
-    ctx.save();
-    ctx.strokeStyle = 'rgba(126, 200, 227, 0.16)';
-    ctx.lineWidth = 2;
-    for (let row = 0; row < 3; row += 1) {
-      ctx.beginPath();
-      for (let x = 0; x <= VIEW_W; x += 16) {
-        const y = VIEW_H - 26 - row * 22 + Math.sin(x / 90 + timeMs / 1400 + row * 2) * 6;
-        if (x === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function topBar(game) {
-    ctx.save();
-    ctx.fillStyle = 'rgba(3, 24, 30, 0.85)';
-    ctx.fillRect(0, 0, VIEW_W, 56);
-    ctx.fillStyle = PANEL_LINE;
-    ctx.fillRect(0, 56, VIEW_W, 1);
-    // Player life, top-left.
-    drawLantern(ctx, 30, 28, 30, game.player.life > 0);
-    text(ctx, String(game.player.life), 52, 30, 30, '#fff8e1', 'left', '800', 'Georgia, serif');
-    text(ctx, 'WREN · YOU', 92, 20, 11, '#9fc6d4', 'left', '700');
-    for (let n = 0; n < 10; n += 1) {
-      drawInkDrop(ctx, 98 + n * 15, 40, 8, n < game.player.ink, '#7ec8e3');
-    }
-    if (game.player.block > 0) text(ctx, `🛡 ${game.player.block} block`, 92, 52, 11, '#bfe3ff', 'left', '700');
-    // Baron life, top-right.
-    text(ctx, 'INK BARON', VIEW_W - 92, 20, 11, '#e8a0a8', 'right', '700');
-    for (let n = 0; n < 10; n += 1) {
-      drawInkDrop(ctx, VIEW_W - 98 - n * 15, 40, 8, n < game.baron.ink, '#e08bb0');
-    }
-    if (game.baron.block > 0) text(ctx, `${game.baron.block} block 🛡`, VIEW_W - 92, 52, 11, '#f3c6d3', 'right', '700');
-    text(ctx, String(game.baron.life), VIEW_W - 52, 30, 30, '#ffe1e6', 'right', '800', 'Georgia, serif');
-    drawLantern(ctx, VIEW_W - 30, 28, 30, game.baron.life > 0, '#e08bb0');
-    // Centre: title, duel score, turn.
-    text(ctx, 'TIDEBOUND', VIEW_W / 2, 19, 19, GOLD, 'center', '800', 'Georgia, serif');
-    const score = `DUEL ${game.duel}/3  ·  ${game.playerDuels} — ${game.baronDuels}  ·  TURN ${game.turn}`;
-    text(ctx, score, VIEW_W / 2, 40, 12, '#d8ecf2', 'center', '700');
-    ctx.restore();
-  }
-
-  function sidePanels(game, timeMs) {
-    // Left: Lantern Log — goals, combo meter, deck, stats.
-    ctx.save();
-    ctx.fillStyle = PANEL;
-    ctx.fillRect(0, 57, 196, VIEW_H - 57);
-    ctx.fillStyle = PANEL_LINE;
-    ctx.fillRect(196, 57, 1, VIEW_H - 57);
-    text(ctx, 'LANTERN LOG', 14, 78, 13, GOLD, 'left', '800');
-    text(ctx, 'WIN: take 2 duels.', 14, 100, 11, '#d8ecf2', 'left', '600');
-    text(ctx, 'A duel ends at 0 lanterns.', 14, 116, 11, '#9fc6d4', 'left', '600');
-    const goals = [
-      { label: 'Win a duel', done: game.stats.duelsPlayed > 0 && game.playerDuels > 0 },
-      { label: 'Land a Counter (+3)', done: game.stats.comboTypes.counter > 0 },
-      { label: 'Land a Prism (3 suits)', done: game.stats.comboTypes.prism > 0 },
-      { label: 'Reach a 4-card chain', done: game.stats.bestChain >= 4 },
-    ];
-    goals.forEach((goal, i) => {
-      const y = 146 + i * 22;
-      ctx.fillStyle = goal.done ? '#3fae6a' : 'rgba(255,255,255,0.14)';
-      ctx.beginPath();
-      ctx.arc(22, y, 7, 0, Math.PI * 2);
-      ctx.fill();
-      if (goal.done) {
-        ctx.strokeStyle = '#eafff1';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(18, y);
-        ctx.lineTo(21, y + 3);
-        ctx.lineTo(26, y - 3);
-        ctx.stroke();
-      }
-      text(ctx, goal.label, 34, y, 11.5, goal.done ? '#c2f2cf' : '#cfe3ea', 'left', '600');
-    });
-    // Combo meter: suits played this turn.
-    text(ctx, 'COMBO — THIS TURN', 14, 252, 12, GOLD, 'left', '800');
-    const suits = game.suitsPlayed;
-    for (let i = 0; i < 5; i += 1) {
-      const x = 26 + i * 32;
-      const y = 282;
-      ctx.beginPath();
-      ctx.arc(x, y, 13, 0, Math.PI * 2);
-      if (i < suits.length) {
-        ctx.fillStyle = SUITS[suits[i]].color;
-        ctx.fill();
-        drawSuitShape(ctx, suits[i], x, y, 15, '#ffffff');
-      } else {
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    }
-    const distinct = new Set(suits).size;
-    text(ctx, suits.length === 0 ? 'Play cards to build a chain.' : `${suits.length} played · ${distinct} suits`, 14, 312, 11, '#cfe3ea', 'left', '600');
-    text(ctx, 'Same suit ×2 = HARMONY +2', 14, 332, 11, '#9fc6d4', 'left', '600');
-    text(ctx, '3 suits = PRISM draw + ink', 14, 348, 11, '#9fc6d4', 'left', '600');
-    text(ctx, 'Beat his suit = COUNTER +3', 14, 364, 11, '#9fc6d4', 'left', '600');
-    // Deck + stats.
-    text(ctx, 'YOUR DECK', 14, 402, 12, GOLD, 'left', '800');
-    text(ctx, `Deck ${game.player.deck.length} · Discard ${game.player.discard.length}`, 14, 424, 11.5, '#d8ecf2', 'left', '600');
-    text(ctx, `Combos ${game.stats.combos} · Best chain ${game.stats.bestChain}`, 14, 444, 11.5, '#d8ecf2', 'left', '600');
-    text(ctx, `Damage dealt ${game.stats.damageDealt}`, 14, 464, 11.5, '#d8ecf2', 'left', '600');
-    text(ctx, 'RECENT', 14, 500, 12, GOLD, 'left', '800');
-    game.log.slice(0, 6).forEach((line, i) => {
-      text(ctx, line.length > 26 ? line.slice(0, 25) + '…' : line, 14, 522 + i * 18, 10.5, i === 0 ? '#ffe9b8' : '#9fc6d4', 'left', '600');
-    });
-    text(ctx, '1–5 play · Space end turn', 14, 648, 11, '#7fa8b8', 'left', '600');
-    text(ctx, 'P pause · M mute · R restart', 14, 666, 11, '#7fa8b8', 'left', '600');
-    // Right: the Baron.
-    ctx.fillStyle = PANEL;
-    ctx.fillRect(VIEW_W - 196, 57, 196, VIEW_H - 57);
-    ctx.fillStyle = PANEL_LINE;
-    ctx.fillRect(VIEW_W - 196, 57, 1, VIEW_H - 57);
-    text(ctx, 'THE INK BARON', VIEW_W - 182, 78, 13, '#f3c6d3', 'left', '800');
-    // Portrait: hooded ink blot.
-    ctx.save();
+function drawSidePanel(ctx, game) {
+  // Left: your stall — goals checklist, crowd meter, stalls played.
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.7)';
+  roundRect(ctx, 8, 76, 188, 470, 10);
+  ctx.fill();
+  text(ctx, 'YOUR STALL', 20, 96, 14, '#e0a83c', 'bold');
+  const goals = [
+    [`Win duel ${game.duel}`, game.duelWinner === 'player'],
+    [`Take ${DUELS_TO_WIN_MATCH} duels`, game.playerDuels >= DUELS_TO_WIN_MATCH],
+    ['Land a Grand Bazaar', game.bazaarDone || game.stats.combos > 0],
+  ];
+  let gy = 124;
+  for (const [label, done] of goals) {
+    ctx.fillStyle = done ? '#58b368' : '#f7ead0';
     ctx.beginPath();
-    ctx.arc(VIEW_W - 98, 132, 44, 0, Math.PI * 2);
-    ctx.fillStyle = '#1c0f2e';
+    ctx.arc(28, gy, 7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#8a5a9e';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = '#e8d5f5';
-    ctx.beginPath();
-    ctx.arc(VIEW_W - 114, 126, 5, 0, Math.PI * 2);
-    ctx.arc(VIEW_W - 82, 126, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#e8d5f5';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(VIEW_W - 118, 148);
-    ctx.quadraticCurveTo(VIEW_W - 98, 158, VIEW_W - 78, 148);
-    ctx.stroke();
-    ctx.restore();
-    text(ctx, 'Collector of stolen light', VIEW_W - 98, 192, 11, '#c9a8d8', 'center', '600');
-    // Telegraph.
-    text(ctx, 'HE REACHES FOR…', VIEW_W - 182, 224, 12, GOLD, 'left', '800');
-    if (game.telegraph) {
-      const suit = SUITS[game.telegraph];
-      ctx.beginPath();
-      ctx.arc(VIEW_W - 98, 262, 30, 0, Math.PI * 2);
-      ctx.fillStyle = suit.color;
-      ctx.fill();
-      drawSuitShape(ctx, game.telegraph, VIEW_W - 98, 262, 34, '#ffffff');
-      text(ctx, game.telegraph.toUpperCase(), VIEW_W - 98, 308, 15, suit.light, 'center', '800');
-      text(ctx, 'Play the suit that beats it', VIEW_W - 98, 328, 11, '#d8ecf2', 'center', '600');
-      text(ctx, 'for COUNTER +3.', VIEW_W - 98, 344, 11, '#d8ecf2', 'center', '600');
-    } else {
-      text(ctx, 'Watching…', VIEW_W - 98, 262, 14, '#9fc6d4', 'center', '600');
-    }
-    const hint = game.phase === 'player'
-      ? (game.telegraph ? `The Baron reaches for ${game.telegraph}…` : 'The Baron watches you.')
-      : 'The Baron plays his hand…';
-    wrapText(hint, VIEW_W - 182, 380, 168, 15, 12, '#ffe9b8');
-    text(ctx, `His hand: ${game.baron.hand.length} cards`, VIEW_W - 182, 440, 11.5, '#d8ecf2', 'left', '600');
-    text(ctx, `His block: ${game.baron.block}`, VIEW_W - 182, 460, 11.5, '#d8ecf2', 'left', '600');
-    text(ctx, game.baron.reflect ? 'Mirror armed — hits bounce!' : '', VIEW_W - 182, 480, 11.5, '#ffd166', 'left', '700');
-    text(ctx, 'CYCLE', VIEW_W - 182, 522, 12, GOLD, 'left', '800');
-    text(ctx, 'Ember beats Gale', VIEW_W - 182, 544, 11.5, '#ffb3a7', 'left', '600');
-    text(ctx, 'Gale beats Tide', VIEW_W - 182, 562, 11.5, '#c2f2cf', 'left', '600');
-    text(ctx, 'Tide beats Ember', VIEW_W - 182, 580, 11.5, '#bfe3ff', 'left', '600');
-    text(ctx, 'Stone breaks ties', VIEW_W - 182, 598, 11.5, '#ffe9b8', 'left', '600');
-    ctx.restore();
-  }
-
-  function wrapText(str, x, y, maxW, lineH, size, color) {
-    const words = str.split(' ');
-    let line = '';
-    let cy = y;
-    for (const word of words) {
-      const test = line ? `${line} ${word}` : word;
-      ctx.font = `600 ${size}px system-ui, sans-serif`;
-      if (ctx.measureText(test).width > maxW && line) {
-        text(ctx, line, x, cy, size, color, 'left', '600');
-        line = word;
-        cy += lineH;
-      } else {
-        line = test;
-      }
-    }
-    if (line) text(ctx, line, x, cy, size, color, 'left', '600');
-  }
-
-  function drawTable(game, view) {
-    layout.handCards = [];
-    // Baron's face-down hand.
-    const backs = game.baron.hand.length;
-    const backW = 62;
-    const backH = 90;
-    const totalW = backs * (backW + 8) - 8;
-    let bx = 640 - totalW / 2;
-    for (let i = 0; i < backs; i += 1) {
-      drawCardBack(ctx, bx, 70, backW, backH);
-      bx += backW + 8;
-    }
-    text(ctx, 'THE BARON’S HAND', 640, 178, 11, '#8fa8b8', 'center', '700');
-    // Centre: played cards + announcement.
-    const played = game.played;
-    const cardW = 104;
-    const cardH = 146;
-    const playedW = played.length * (cardW + 12) - 12;
-    let px = 640 - Math.max(0, playedW) / 2;
-    played.forEach((entry) => {
-      const progress = Math.min(1, entry.ageMs / 320);
-      const fromY = entry.by === 'player' ? 620 : 70;
-      const y = fromY + (260 - fromY) * progress;
-      const alpha = 0.3 + 0.7 * progress;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      const scaleX = 0.6 + 0.4 * progress;
-      ctx.translate(px + cardW / 2, y + cardH / 2);
-      ctx.scale(scaleX, 1);
-      ctx.translate(-(px + cardW / 2), -(y + cardH / 2));
-      drawCardFace(ctx, entry.card, px, y, cardW, cardH, { affordable: true });
-      ctx.restore();
-      if (entry.bonus > 0) {
-        text(ctx, `+${entry.bonus}`, px + cardW / 2, y + cardH + 16, 14, GOLD, 'center', '800');
-      }
-      px += cardW + 12;
-    });
-    if (played.length === 0) {
-      text(ctx, 'Played cards land here.', 640, 330, 13, 'rgba(216,236,242,0.5)', 'center', '600');
-    }
-    // Announcement banner.
-    if (game.announcement) {
-      const age = game.announcement.ageMs;
-      const alpha = age < 1400 ? 1 : Math.max(0, 1 - (age - 1400) / 600);
-      const scale = age < 160 ? 1.25 - (0.25 * age) / 160 : 1;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.translate(640, 218);
-      ctx.scale(scale, scale);
-      ctx.fillStyle = 'rgba(3, 24, 30, 0.88)';
-      ctx.font = '800 22px Georgia, serif';
-      const w = Math.max(280, ctx.measureText(game.announcement.text).width + 90);
-      rr(ctx, -w / 2, -30, w, 60, 12);
-      ctx.fill();
-      ctx.strokeStyle = GOLD;
+    if (done) {
+      ctx.strokeStyle = '#2a1a2e';
       ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(24, gy);
+      ctx.lineTo(27, gy + 3);
+      ctx.lineTo(33, gy - 3);
       ctx.stroke();
-      text(ctx, game.announcement.text, 0, -6, 22, GOLD, 'center', '800', 'Georgia, serif');
-      if (game.announcement.sub) text(ctx, game.announcement.sub, 0, 16, 12, '#ffe9b8', 'center', '600');
-      ctx.restore();
     }
-    // Floating damage numbers.
-    for (const floater of game.floaters) {
-      const age = floater.ageMs;
-      const alpha = Math.max(0, 1 - age / 1000);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      text(ctx, floater.text, floater.x, floater.y - age * 0.06, 30, floater.color, 'center', '800', 'Georgia, serif');
-      ctx.restore();
-    }
-    // Turn banner.
-    if (game.phase === 'baron') {
-      text(ctx, 'THE BARON PLAYS…', 640, 540, 14, '#f3c6d3', 'center', '800');
-    } else if (game.duelOver) {
-      const won = game.duelOver === 'player';
-      text(ctx, won ? 'DUEL WON — the isles cheer!' : 'DUEL LOST — the tide takes a lantern.', 640, 540, 16, won ? GOLD : '#e8a0a8', 'center', '800', 'Georgia, serif');
-    } else {
-      text(ctx, 'YOUR TURN — play a card, or end the turn.', 640, 540, 14, '#d8ecf2', 'center', '700');
-    }
-    // Player hand, fanned.
-    const hand = game.player.hand;
-    const hw = 116;
-    const hh = 156;
-    const gap = 8;
-    const handW = hand.length * (hw + gap) - gap;
-    let hx = 640 - handW / 2;
-    const hy = 596;
-    hand.forEach((card, index) => {
-      const hovered = view.mouse.x >= hx && view.mouse.x <= hx + hw && view.mouse.y >= hy - 12 && view.mouse.y <= hy + hh;
-      const affordable = game.phase === 'player' && game.player.ink >= card.cost && !game.duelOver;
-      layout.handCards.push({ x: hx, y: hy - (hovered ? 12 : 0), w: hw, h: hh, index });
-      ctx.save();
-      const rot = (index - (hand.length - 1) / 2) * 0.035;
-      ctx.translate(hx + hw / 2, hy + hh / 2);
-      ctx.rotate(rot);
-      ctx.translate(-(hx + hw / 2), -(hy + hh / 2));
-      if (!affordable) ctx.globalAlpha = 0.72;
-      drawCardFace(ctx, card, hx, hy, hw, hh, { affordable, hover: hovered });
-      ctx.restore();
-      text(ctx, String(index + 1), hx + hw / 2, hy + hh + 14, 11, hovered ? GOLD : '#7fa8b8', 'center', '700');
-      hx += hw + gap;
-    });
-    // End Turn button, at the foot of the Baron's panel.
-    const endBox = { x: VIEW_W - 196 + 13, y: 700, w: 170, h: 52 };
-    const canEnd = game.phase === 'player' && !game.duelOver;
-    drawButton(ctx, endBox, 'END TURN', canEnd, 'Space');
-    layout.endTurn = endBox;
-    // Bottom hint strip.
-    text(ctx, 'Click a card or press 1–5 to play it · Combos: same suit ×2 Harmony · 3 suits Prism · beat his suit Counter', 640, 788, 11.5, '#7fa8b8', 'center', '600');
+    text(ctx, label, 42, gy, 12, done ? '#8fd6a0' : '#f7ead0', 'normal');
+    gy += 24;
   }
-
-  function drawTitle(game, view) {
-    layout.handCards = [];
-    layout.endTurn = null;
-    // Rising lanterns.
-    for (let i = 0; i < 14; i += 1) {
-      const x = 60 + ((i * 89) % 1160);
-      const cycle = (view.timeMs / 9000 + i * 0.37) % 1;
-      const y = 760 - cycle * 700;
-      const alpha = cycle < 0.1 ? cycle / 0.1 : cycle > 0.85 ? (1 - cycle) / 0.15 : 1;
-      ctx.save();
-      ctx.globalAlpha = 0.35 * alpha;
-      drawLantern(ctx, x, y, 22 + (i % 3) * 6, true);
-      ctx.restore();
+  // Crowd meter.
+  text(ctx, 'CROWD', 20, 216, 13, '#e0a83c', 'bold');
+  const cw = 164;
+  ctx.fillStyle = '#3d2436';
+  roundRect(ctx, 20, 228, cw, 16, 8);
+  ctx.fill();
+  ctx.fillStyle = game.rushHour ? '#e5484d' : '#e0a83c';
+  const fillW = Math.max(6, (game.crowd / CROWD_RUSH_AT) * cw);
+  roundRect(ctx, 20, 228, fillW, 16, 8);
+  ctx.fill();
+  text(ctx, game.rushHour ? 'RUSH HOUR! Next Sell +4' : `${game.crowd}/${CROWD_RUSH_AT} to Rush Hour`, 20, 256, 12, '#ffd166', 'bold');
+  // Stalls played this turn (combo meter).
+  text(ctx, 'STALLS THIS TURN', 20, 286, 13, '#e0a83c', 'bold');
+  STALL_ORDER.forEach((stall, i) => {
+    const played = game.stallsThisTurn.includes(stall);
+    drawStallShape(ctx, STALLS[stall].shape, 32 + i * 42, 308, played ? 15 : 11, played ? STALLS[stall].color : '#5a4256');
+  });
+  text(ctx, `Chain x${game.chain}  •  Best x${game.stats.bestChain}`, 20, 336, 12, '#cbb98f', 'normal');
+  text(ctx, `Combos landed: ${game.stats.combos}`, 20, 360, 12, '#cbb98f', 'normal');
+  // Log.
+  text(ctx, 'MARKET TALK', 20, 396, 13, '#e0a83c', 'bold');
+  ctx.font = '12px Georgia, serif';
+  ctx.textAlign = 'left';
+  let ly = 418;
+  for (const line of game.log.slice(0, 6)) {
+    ctx.fillStyle = '#d8c8b8';
+    const words = line.split(' ');
+    let cur = '';
+    for (const w of words) {
+      if ((cur + ' ' + w).trim().length > 26) {
+        ctx.fillText(cur.trim(), 20, ly);
+        ly += 15;
+        cur = w;
+      } else cur += ' ' + w;
     }
-    text(ctx, 'TIDEBOUND', 640, 150, 84, GOLD, 'center', '800', 'Georgia, serif');
-    text(ctx, GAME_SUBTITLE, 640, 205, 26, '#d8ecf2', 'center', '600', 'Georgia, serif');
-    text(ctx, 'You are Wren, keeper of the last lantern-light. The Ink Baron steals light —', 640, 248, 16, '#bfe3ff', 'center', '600');
-    text(ctx, 'outplay him, card by card, and keep the isles lit.', 640, 270, 16, '#bfe3ff', 'center', '600');
-    // Play button.
-    const playBox = { x: 640 - 130, y: 310, w: 260, h: 64 };
-    drawButton(ctx, playBox, '▶  PLAY', true, 'Click or press Enter');
-    layout.playButton = playBox;
-    // How to play panel.
-    ctx.save();
-    ctx.fillStyle = PANEL;
-    rr(ctx, 130, 410, 470, 300, 14);
+    if (cur.trim()) { ctx.fillText(cur.trim(), 20, ly); ly += 15; }
+    if (ly > 520) break;
+  }
+}
+
+function drawRivalPanel(ctx, game) {
+  // Right: Zinnia — telegraph, her phase, her guard.
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.7)';
+  roundRect(ctx, 1084, 76, 188, 470, 10);
+  ctx.fill();
+  text(ctx, RIVAL_NAME.toUpperCase(), 1096, 96, 14, '#e0a83c', 'bold');
+  const phase = RIVAL_PHASES[Math.min(game.duel - 1, RIVAL_PHASES.length - 1)];
+  text(ctx, phase.title, 1096, 118, 12, '#cbb98f', 'normal');
+  text(ctx, 'SHE REACHES FOR…', 1096, 152, 12, '#ffd166', 'bold');
+  const tele = STALLS[game.telegraph.stall];
+  drawStallShape(ctx, tele.shape, 1130, 190, 26, tele.color);
+  text(ctx, tele.name.toUpperCase(), 1170, 190, 20, tele.color, 'bold');
+  ctx.font = 'italic 12px Georgia, serif';
+  ctx.fillStyle = '#d8c8b8';
+  ctx.textAlign = 'left';
+  const words = game.telegraph.text.split(' ');
+  let line = '';
+  let ty = 226;
+  for (const w of words) {
+    if ((line + ' ' + w).trim().length > 24) {
+      ctx.fillText(line.trim(), 1096, ty);
+      line = w;
+      ty += 15;
+    } else line += ' ' + w;
+  }
+  if (line.trim()) ctx.fillText(line.trim(), 1096, ty);
+  text(ctx, 'Beat it: play the stall', 1096, 286, 12, '#8fd6a0', 'normal');
+  text(ctx, 'that undercuts hers (+3).', 1096, 304, 12, '#8fd6a0', 'normal');
+  // Cycle reminder.
+  text(ctx, 'SPICE › SILK › BRASS', 1096, 336, 12, '#cbb98f', 'normal');
+  text(ctx, 'LEAF › SPICE', 1096, 354, 12, '#cbb98f', 'normal');
+  text(ctx, `Her guard: ${game.rival.guard}`, 1096, 388, 12, '#f7ead0', 'normal');
+  text(ctx, game.rival.reflect ? 'Mirror Scarf is UP — hits bounce!' : '', 1096, 410, 12, '#ffd166', 'bold');
+  text(ctx, `Her deck: ${game.rival.pile.cards.length} cards`, 1096, 434, 12, '#cbb98f', 'normal');
+  text(ctx, `Your deck: ${game.player.pile.cards.length} cards`, 1096, 456, 12, '#cbb98f', 'normal');
+}
+
+function drawPatronRow(ctx, game) {
+  // Big life totals under the top bar, both sides.
+  text(ctx, PLAYER_NAME, 220, 96, 15, '#f7ead0', 'bold');
+  text(ctx, `${game.player.patrons}`, 220, 132, 40, '#ffd166', 'bold');
+  text(ctx, 'PATRONS', 280, 132, 12, '#cbb98f', 'normal');
+  if (game.player.guard > 0) text(ctx, `Guard ${game.player.guard}`, 220, 162, 13, '#8fd6a0', 'bold');
+  if (game.player.reflect) text(ctx, 'Mirror up!', 220, 182, 13, '#ffd166', 'bold');
+  text(ctx, 'COINS', 420, 96, 12, '#cbb98f', 'normal');
+  for (let i = 0; i < game.player.maxCoins; i += 1) {
+    coinIcon(ctx, 432 + i * 24, 128, 10, '');
+    if (i >= game.player.coins) {
+      ctx.fillStyle = 'rgba(42,26,46,0.65)';
+      ctx.beginPath();
+      ctx.arc(432 + i * 24, 128, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  text(ctx, `${game.player.coins}/${game.player.maxCoins}`, 420, 158, 13, '#ffd166', 'bold');
+
+  text(ctx, RIVAL_NAME, 1060, 96, 15, '#f7ead0', 'bold', 'right');
+  text(ctx, `${game.rival.patrons}`, 1060, 132, 40, '#e5484d', 'bold', 'right');
+  text(ctx, 'PATRONS', 1000, 132, 12, '#cbb98f', 'normal', 'right');
+  if (game.rival.guard > 0) text(ctx, `Guard ${game.rival.guard}`, 1060, 162, 13, '#8fd6a0', 'bold', 'right');
+  text(ctx, 'COINS', 860, 96, 12, '#cbb98f', 'normal', 'right');
+  for (let i = 0; i < game.rival.maxCoins; i += 1) {
+    coinIcon(ctx, 848 - i * 24, 128, 10, '');
+    if (i >= game.rival.coins) {
+      ctx.fillStyle = 'rgba(42,26,46,0.65)';
+      ctx.beginPath();
+      ctx.arc(848 - i * 24, 128, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  text(ctx, `${game.rival.coins}/${game.rival.maxCoins}`, 860, 158, 13, '#e5484d', 'bold', 'right');
+}
+
+function drawButton(ctx, id, x, y, w, h, label, enabled = true) {
+  ctx.save();
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fillStyle = enabled ? '#e0a83c' : '#5a4256';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#7a5510';
+  ctx.stroke();
+  text(ctx, label, x + w / 2, y + h / 2 + 1, 17, '#2a1a2e', 'bold', 'center');
+  ctx.restore();
+  layout.buttons.push({ id, x, y, w, h });
+}
+
+function drawTable(ctx, game, input, now) {
+  layout.cards = [];
+  layout.buttons = [];
+  // Warm bazaar backdrop: plum night, striped awnings, hanging lamps.
+  const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  grad.addColorStop(0, '#2a1a2e');
+  grad.addColorStop(0.5, '#3d1f2b');
+  grad.addColorStop(1, '#241428');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  // Awning stripes along the top.
+  for (let i = 0; i < 16; i += 1) {
+    ctx.fillStyle = i % 2 === 0 ? '#7a2e2e' : '#f7ead0';
+    ctx.globalAlpha = 0.16;
+    ctx.beginPath();
+    ctx.moveTo(i * 80, 67);
+    ctx.lineTo(i * 80 + 40, 67);
+    ctx.lineTo(i * 80 + 52, 96);
+    ctx.lineTo(i * 80 + 12, 96);
+    ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = PANEL_LINE;
-    ctx.lineWidth = 1.5;
+  }
+  ctx.globalAlpha = 1;
+  // Hanging lamps.
+  for (let i = 0; i < 7; i += 1) {
+    const lx = 120 + i * 170;
+    ctx.strokeStyle = '#e0a83c';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(lx, 67);
+    ctx.lineTo(lx, 108);
     ctx.stroke();
-    text(ctx, 'HOW TO PLAY', 160, 440, 15, GOLD, 'left', '800');
-    const lines = [
-      '• First to win 2 duels takes the match. A duel ends at 0 lanterns.',
-      '• Each turn: draw 2 cards, gain 1 ink (max 10). Play cards for ink.',
-      '• Strike deals damage · Guard gains block · Trick draws, steals, reflects.',
-      '• Same suit twice in a turn: HARMONY +2.',
-      '• Three different suits in a turn: PRISM — draw 1, refund 1 ink.',
-      '• Play the suit that beats the Baron’s telegraph: COUNTER +3.',
-      '• The Baron shows his next suit — read him, then counter him.',
-    ];
-    lines.forEach((line, i) => text(ctx, line, 160, 472 + i * 30, 13.5, '#d8ecf2', 'left', '600'));
-    ctx.restore();
-    // Deck preview: one card of each suit.
-    ctx.save();
-    ctx.fillStyle = PANEL;
-    rr(ctx, 680, 410, 470, 300, 14);
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(lx, 116, 9, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = PANEL_LINE;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    text(ctx, 'YOUR DECK — FOUR SUITS', 710, 440, 15, GOLD, 'left', '800');
-    const preview = [
-      { id: 'p1', name: 'Cinder Fang', suit: 'Ember', kind: 'Strike', cost: 2, value: 4 },
-      { id: 'p2', name: 'Deep Current', suit: 'Tide', kind: 'Strike', cost: 3, value: 5 },
-      { id: 'p3', name: 'Storm Kite', suit: 'Gale', kind: 'Strike', cost: 3, value: 6 },
-      { id: 'p4', name: 'Granite Bastion', suit: 'Stone', kind: 'Guard', cost: 2, value: 6 },
-    ];
-    preview.forEach((card, i) => {
-      drawCardFace(ctx, card, 706 + i * 112, 470, 100, 140, { affordable: true });
-    });
-    text(ctx, 'Ember beats Gale · Gale beats Tide · Tide beats Ember · Stone is neutral', 915, 660, 12.5, '#ffe9b8', 'center', '600');
-    text(ctx, 'Suits are told apart by colour AND shape — never by text alone.', 915, 684, 12, '#9fc6d4', 'center', '600');
+  }
+  drawTopBar(ctx, game);
+  drawSidePanel(ctx, game);
+  drawRivalPanel(ctx, game);
+  drawPatronRow(ctx, game);
+
+  // Rival hand: face-down backs.
+  const backs = game.rival.hand.length;
+  const bw = backs * (BACK_W + 10) - 10;
+  for (let i = 0; i < backs; i += 1) {
+    drawCardBack(ctx, 640 - bw / 2 + i * (BACK_W + 10), BACKS_Y, BACK_W, BACK_H);
+  }
+  text(ctx, `Zinnia's hand — ${backs} cards`, 640, BACKS_Y - 10, 12, '#cbb98f', 'normal', 'center');
+
+  // Centre: played cards this turn.
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.45)';
+  roundRect(ctx, 210, PLAYED_Y - 14, 860, 216, 14);
+  ctx.fill();
+  // The combo announcement takes the counter's header line while it is live,
+  // so it never overlaps the rival's card backs above the panel.
+  if (game.announcement) {
+    const a = game.announcement;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - Math.max(0, a.t - 1.6) / 0.6);
+    text(ctx, a.text, 640, PLAYED_Y + 4, a.big ? 24 : 18, '#ffd166', 'bold', 'center');
     ctx.restore();
-    text(ctx, 'An original game — no borrowed names, art or rules. · 1–5 play · Space end turn · P pause · M mute', 640, 748, 12, '#7fa8b8', 'center', '600');
+  } else {
+    text(ctx, 'THE COUNTER', 640, PLAYED_Y + 4, 12, '#e0a83c', 'bold', 'center');
+  }
+  const played = game.played.slice(-6);
+  const pw = played.length * (CARD_W * 0.62 + 12) - 12;
+  played.forEach((entry, i) => {
+    const x = 640 - pw / 2 + i * (CARD_W * 0.62 + 12);
+    const scale = 0.62;
+    ctx.save();
+    ctx.translate(x, PLAYED_Y + 22);
+    ctx.scale(scale, scale);
+    drawCardFace(ctx, entry, 0, 0, CARD_W, CARD_H, { playable: true });
+    ctx.restore();
+    text(ctx, entry.who === 'player' ? 'YOU' : 'ZINNIA', x + (CARD_W * scale) / 2, PLAYED_Y + 22 + CARD_H * scale + 12, 11, entry.who === 'player' ? '#ffd166' : '#e5484d', 'bold', 'center');
+  });
+  if (played.length === 0) {
+    text(ctx, 'Play a card — the counter is empty.', 640, PLAYED_Y + 100, 15, '#cbb98f', 'normal', 'center');
   }
 
-  function drawEnd(game, view, won) {
-    // Golden (win) or deep-ink (loss) wash over a dimmed table.
+  // Player hand, fanned. The hand always fits the centre column (204..1076)
+  // so it never slides under the buttons in the right column: with more
+  // cards, each card scales down instead of spilling over.
+  const hand = game.player.hand;
+  const n = hand.length;
+  const gap = 10;
+  const availW = 872;
+  const cw = Math.min(CARD_W, (availW - (n - 1) * gap) / n);
+  const hscale = cw / CARD_W;
+  const totalW = n * cw + (n - 1) * gap;
+  const startX = 640 - totalW / 2;
+  hand.forEach((card, i) => {
+    const x = startX + i * (cw + gap);
+    const hovered = input && input.hover && input.hover.type === 'card' && input.hover.card.uid === card.uid;
     ctx.save();
-    ctx.fillStyle = won ? 'rgba(20, 26, 4, 0.72)' : 'rgba(6, 10, 28, 0.78)';
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    ctx.translate(x, HAND_Y - (hovered ? 10 : 0));
+    ctx.scale(hscale, hscale);
+    drawCardFace(ctx, card, 0, 0, CARD_W, CARD_H, { playable: canPlayCard(game, card), hovered: false });
     ctx.restore();
-    if (won) {
-      // Lantern flourish.
-      for (let i = 0; i < 22; i += 1) {
-        const x = 60 + ((i * 53) % 1160);
-        const cycle = (view.timeMs / 6000 + i * 0.29) % 1;
-        const y = 780 - cycle * 720;
-        ctx.save();
-        ctx.globalAlpha = 0.9;
-        drawLantern(ctx, x + Math.sin(view.timeMs / 800 + i) * 12, y, 20 + (i % 4) * 5, true);
-        ctx.restore();
-      }
-      text(ctx, 'VICTORY', 640, 190, 76, GOLD, 'center', '800', 'Georgia, serif');
-      text(ctx, 'The Lantern Isles keep their light.', 640, 248, 24, '#ffe9b8', 'center', '600', 'Georgia, serif');
-    } else {
-      text(ctx, 'DEFEAT', 640, 190, 76, '#e8a0a8', 'center', '800', 'Georgia, serif');
-      text(ctx, 'The Baron keeps the tide.', 640, 248, 24, '#f3c6d3', 'center', '600', 'Georgia, serif');
-    }
-    const score = `Duels  ${game.playerDuels} — ${game.baronDuels}`;
-    text(ctx, score, 640, 300, 22, '#fff8e1', 'center', '800', 'Georgia, serif');
-    // Stats grid.
-    const stats = [
-      ['Cards played', String(game.stats.cardsPlayed)],
-      ['Damage dealt', String(game.stats.damageDealt)],
-      ['Combos landed', String(game.stats.combos)],
-      ['Best chain', `${game.stats.bestChain} cards`],
-      ['Duels played', String(game.stats.duelsPlayed)],
-    ];
+    layout.cards.push({ card, x, y: HAND_Y - (hovered ? 10 : 0), w: cw, h: CARD_H * hscale });
+    text(ctx, String(i + 1), x + cw / 2, HAND_Y + CARD_H * hscale + 14, 12, '#cbb98f', 'bold', 'center');
+  });
+
+  // Turn controls.
+  const canEnd = game.phase === 'player' && !game.duelOver && !game.matchOver;
+  drawButton(ctx, 'end', 1084, 560, 188, 46, 'END TURN  [Space]', canEnd);
+  drawButton(ctx, 'restart', 1084, 616, 188, 40, 'RESTART  [R]', true);
+  text(ctx, game.phase === 'player' ? 'Your turn — play a card or end it.' : 'Zinnia is haggling…', 1178, 690, 13, '#f7ead0', 'normal', 'center');
+  text(ctx, game.paused ? 'PAUSED — press P to resume' : 'P pause  •  M mute', 1178, 716, 12, '#cbb98f', 'normal', 'center');
+
+  // Floaters.
+  for (const f of game.floaters) {
     ctx.save();
-    ctx.fillStyle = PANEL;
-    rr(ctx, 440, 340, 400, 40 + stats.length * 34, 14);
+    ctx.globalAlpha = Math.max(0, 1 - f.t / 1.2);
+    text(ctx, f.text, f.x, f.y - f.t * 46, 24, f.color, 'bold', 'center');
+    ctx.restore();
+  }
+
+  // Duel-over banner (match continues).
+  if (game.duelOver && !game.matchOver) {
+    ctx.fillStyle = 'rgba(20, 10, 18, 0.72)';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    text(ctx, game.duelWinner === 'player' ? 'DUEL WON!' : 'DUEL LOST', 640, 330, 54, game.duelWinner === 'player' ? '#ffd166' : '#e5484d', 'bold', 'center');
+    text(ctx, `Duels: you ${game.playerDuels} — ${game.rivalDuels} Zinnia`, 640, 390, 20, '#f7ead0', 'normal', 'center');
+    drawButton(ctx, 'next', 540, 430, 200, 52, 'NEXT DUEL  [Enter]', true);
+  }
+
+  // Bottom hint bar.
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.85)';
+  ctx.fillRect(0, CANVAS_H - 32, CANVAS_W, 32);
+  text(ctx, 'Click a card or press 1–7 to play it  •  Space ends your turn  •  Match the telegraph to Undercut (+3)  •  Two of one stall = Stall Set (+2)  •  Three stalls = Grand Bazaar', 640, CANVAS_H - 16, 12, '#cbb98f', 'normal', 'center');
+}
+
+function canPlayCard(game, card) {
+  return game.phase === 'player' && !game.duelOver && !game.matchOver && game.player.coins >= card.cost;
+}
+
+function drawTitle(ctx, game) {
+  layout.cards = [];
+  layout.buttons = [];
+  const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  grad.addColorStop(0, '#2a1a2e');
+  grad.addColorStop(1, '#4a2333');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  // Awning stripes.
+  for (let i = 0; i < 16; i += 1) {
+    ctx.fillStyle = i % 2 === 0 ? '#7a2e2e' : '#f7ead0';
+    ctx.globalAlpha = 0.2;
+    ctx.beginPath();
+    ctx.moveTo(i * 80, 0);
+    ctx.lineTo(i * 80 + 40, 0);
+    ctx.lineTo(i * 80 + 52, 46);
+    ctx.lineTo(i * 80 + 12, 46);
+    ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = PANEL_LINE;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    stats.forEach(([label, value], i) => {
-      text(ctx, label, 470, 368 + i * 34, 14, '#cfe3ea', 'left', '600');
-      text(ctx, value, 810, 368 + i * 34, 14, GOLD, 'right', '800');
-    });
-    ctx.restore();
-    const againBox = { x: 640 - 130, y: 590, w: 260, h: 60 };
-    drawButton(ctx, againBox, won ? 'PLAY AGAIN' : 'TRY AGAIN', true, 'Click or press Enter');
-    layout.retryButton = againBox;
-    text(ctx, won ? 'Wren’s lantern burns on. The Baron will be back — keep it lit.' : 'The isles go dark… for now. Shuffle up and take the light back.', 640, 690, 14, '#9fc6d4', 'center', '600');
   }
+  ctx.globalAlpha = 1;
+  // Four stall shapes as a crest.
+  STALL_ORDER.forEach((stall, i) => {
+    drawStallShape(ctx, STALLS[stall].shape, 470 + i * 110, 150, 34, STALLS[stall].color);
+  });
+  text(ctx, GAME_TITLE, 640, 250, 84, '#ffd166', 'bold', 'center');
+  text(ctx, GAME_SUBTITLE, 640, 310, 26, '#f7ead0', 'normal', 'center');
+  text(ctx, 'Out-haggle Madame Zinnia in the night market. Win 2 duels, keep your patrons.', 640, 348, 17, '#cbb98f', 'normal', 'center');
+  drawButton(ctx, 'play', 520, 390, 240, 58, 'PLAY  [Enter]', true);
+  // How to play.
+  ctx.fillStyle = 'rgba(20, 10, 18, 0.7)';
+  roundRect(ctx, 240, 480, 800, 180, 12);
+  ctx.fill();
+  text(ctx, 'HOW TO PLAY', 640, 508, 16, '#e0a83c', 'bold', 'center');
+  const lines = [
+    'Each card costs coins and wins you patrons. First to 0 patrons loses the duel.',
+    'STALL SET: two cards of one stall in a turn (+2).  GRAND BAZAAR: three stalls (+draw, +coin).',
+    'UNDERCUT: play the stall that beats what Zinnia telegraphs (+3).  Crowd of 8 = RUSH HOUR (+4 Sell).',
+    'Click a card or press 1–7. Space ends your turn. P pauses, M mutes, R restarts.',
+  ];
+  lines.forEach((line, i) => text(ctx, line, 640, 540 + i * 26, 14, '#f7ead0', 'normal', 'center'));
+  text(ctx, 'A complete original card game — no real money, no network, just the market.', 640, 700, 13, '#cbb98f', 'normal', 'center');
+}
 
-  function drawPaused() {
-    ctx.save();
-    ctx.fillStyle = 'rgba(3, 18, 24, 0.78)';
-    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    text(ctx, 'PAUSED', 640, 360, 60, GOLD, 'center', '800', 'Georgia, serif');
-    text(ctx, 'Press P or click to carry on.', 640, 420, 16, '#d8ecf2', 'center', '600');
-    ctx.restore();
+function drawStats(ctx, game, y0) {
+  const s = game.stats;
+  const rows = [
+    `Cards played: ${s.cardsPlayed}`,
+    `Combos landed: ${s.combos}`,
+    `Best chain: x${s.bestChain}`,
+    `Sells ${s.sells}  •  Charms ${s.charms}  •  Haggles ${s.haggles}`,
+    `Coins stolen: ${s.coinsStolen}`,
+    `Duels: you ${game.playerDuels} — ${game.rivalDuels} Zinnia`,
+  ];
+  rows.forEach((row, i) => text(ctx, row, 640, y0 + i * 30, 17, '#f7ead0', 'normal', 'center'));
+}
+
+function drawEndScreen(ctx, game, won) {
+  layout.cards = [];
+  layout.buttons = [];
+  const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  if (won) {
+    grad.addColorStop(0, '#4a3410');
+    grad.addColorStop(1, '#2a1a2e');
+  } else {
+    grad.addColorStop(0, '#3d1f2b');
+    grad.addColorStop(1, '#160a12');
   }
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  if (won) {
+    // Coin confetti, deterministic positions from the seed.
+    let seed = game.seed * 7919 + 13;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    for (let i = 0; i < 60; i += 1) {
+      const x = rnd() * CANVAS_W;
+      const y = rnd() * 420;
+      coinIcon(ctx, x, y, 7 + rnd() * 6, '');
+    }
+    text(ctx, 'VICTORY!', 640, 180, 88, '#ffd166', 'bold', 'center');
+    text(ctx, 'The Coinmarket is yours — Zinnia packs her stall and bows.', 640, 250, 20, '#f7ead0', 'normal', 'center');
+  } else {
+    text(ctx, 'DEFEAT', 640, 180, 88, '#e5484d', 'bold', 'center');
+    text(ctx, 'Zinnia keeps the market — this time. Your stall will be back.', 640, 250, 20, '#f7ead0', 'normal', 'center');
+  }
+  drawStats(ctx, game, 320);
+  drawButton(ctx, 'again', 520, 540, 240, 58, 'PLAY AGAIN  [Enter]', true);
+  text(ctx, won ? 'Pip the Peddler, champion of the Brass Bazaar.' : 'Tip: watch the telegraph — Undercut pays +3.', 640, 640, 15, '#cbb98f', 'normal', 'center');
+}
 
-  function spawnWinParticles() {
-    if (particles.length === 0) {
-      for (let i = 0; i < 40; i += 1) {
-        particles.push({ x: 200 + Math.random() * 880, y: 700 + Math.random() * 80, vy: 20 + Math.random() * 40, size: 14 + Math.random() * 18, phase: Math.random() * 6 });
-      }
+export function render(ctx, game, input, now) {
+  if (game.screen === 'title') drawTitle(ctx, game);
+  else if (game.screen === 'win') drawEndScreen(ctx, game, true);
+  else if (game.screen === 'loss') drawEndScreen(ctx, game, false);
+  else drawTable(ctx, game, input, now);
+  if (game.paused && game.screen === 'table') {
+    ctx.fillStyle = 'rgba(20, 10, 18, 0.7)';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    text(ctx, 'PAUSED', 640, 380, 60, '#f7ead0', 'bold', 'center');
+    text(ctx, 'Press P to resume', 640, 440, 20, '#cbb98f', 'normal', 'center');
+  }
+}
+
+export function hitTest(x, y) {
+  for (const b of layout.buttons) {
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+      return { type: 'button', id: b.id };
     }
   }
-
-  return {
-    layout,
-    draw(game, screen, view) {
-      ctx.clearRect(0, 0, VIEW_W, VIEW_H);
-      if (screen !== lastScreen) {
-        lastScreen = screen;
-        if (screen === SCREEN_WIN) spawnWinParticles();
-      }
-      background(view.timeMs);
-      if (screen === SCREEN_TITLE) {
-        drawTitle(game, view);
-        return;
-      }
-      topBar(game);
-      sidePanels(game, view.timeMs);
-      if (screen === SCREEN_WIN) drawEnd(game, view, true);
-      else if (screen === SCREEN_LOSS) drawEnd(game, view, false);
-      else {
-        drawTable(game, view);
-        if (screen === SCREEN_PAUSED) drawPaused();
-      }
-    },
-  };
+  for (let i = layout.cards.length - 1; i >= 0; i -= 1) {
+    const c = layout.cards[i];
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) {
+      return { type: 'card', card: c.card };
+    }
+  }
+  return null;
 }

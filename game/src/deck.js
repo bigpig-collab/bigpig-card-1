@@ -1,50 +1,49 @@
-// TIDEBOUND — decks and drawing. One job: build, shuffle and draw cards.
-// All randomness comes from a seeded generator so a screenshot seed replays
-// the same deck every time.
-import { DECK_RECIPE, cardById } from './cards.js';
-
-// mulberry32: a small, fast, deterministic generator.
+// BRASS BAZAAR — deck and randomness. One job: a seeded shuffle and a draw pile.
+// The seeded generator keeps screenshot staging reproducible: same seed,
+// same shuffle, same game, every time.
 export function createRandom(seed) {
-  let state = seed >>> 0;
+  let state = (seed >>> 0) || 1;
   return function next() {
-    state |= 0;
-    state = (state + 0x6d2b79f5) | 0;
-    let value = Math.imul(state ^ (state >>> 15), 1 | state);
-    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
   };
 }
 
-export function shuffle(cards, random) {
-  const pile = [...cards];
-  for (let index = pile.length - 1; index > 0; index -= 1) {
-    const other = Math.floor(random() * (index + 1));
-    [pile[index], pile[other]] = [pile[other], pile[index]];
+export function shuffle(list, random) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
   }
-  return pile;
+  return out;
 }
 
-export function buildDeck(random) {
-  const cards = DECK_RECIPE.map((id) => ({ ...cardById(id), uid: 0 }));
-  const shuffled = shuffle(cards, random);
-  shuffled.forEach((card, index) => {
-    card.uid = index + 1;
-  });
-  return shuffled;
+// A pile is { cards: [...card objects...], discard: [...] }.
+// draw() refills from the discard pile when the deck runs dry.
+export function makePile(cards, random) {
+  return { cards: shuffle(cards, random), discard: [] };
 }
 
-// Draw up to `count` cards, reshuffling the discard pile when the deck runs
-// dry. Returns the drawn cards; the piles are mutated in place. `random`
-// defaults to Math.random; pass a seeded generator to keep a run replayable.
-export function drawCards(deck, discard, count, random = Math.random) {
+export function drawFrom(pile, random, count) {
   const drawn = [];
-  for (let n = 0; n < count; n += 1) {
-    if (deck.length === 0) {
-      if (discard.length === 0) break;
-      deck.push(...shuffle(discard.splice(0, discard.length), random));
+  for (let i = 0; i < count; i += 1) {
+    if (pile.cards.length === 0) {
+      if (pile.discard.length === 0) return drawn;
+      pile.cards = shuffle(pile.discard, random);
+      pile.discard = [];
     }
-    const card = deck.pop();
-    if (card) drawn.push(card);
+    drawn.push(pile.cards.pop());
   }
   return drawn;
+}
+
+// Every card in play carries a unique id so the rules can find it in a hand
+// even when two copies share a name. The counter restarts with each page load,
+// which keeps seeded screenshot staging reproducible.
+let nextUid = 1;
+export function mintUid() {
+  nextUid += 1;
+  return nextUid;
 }

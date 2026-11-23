@@ -1,234 +1,127 @@
-// TIDEBOUND — boot and the one loop. One job: screens, timing and wiring.
-// ?seed=N fixes the shuffle. ?shot=title|table|win|loss stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady.
-import { BARON_PLAY_DELAY_MS } from './config.js';
-import { createRandom } from './deck.js';
-import {
-  PHASE_BARON, PHASE_PLAYER, canPlay, checkDuelEnd, createGame, endPlayerTurn,
-  nextDuel, playCard, restartMatch, startPlayerTurn,
-} from './rules.js';
-import { buildPlan, chooseTelegraph, playPlannedCard } from './ai.js';
-import {
-  ACTION_CONFIRM, ACTION_END_TURN, ACTION_MUTE, ACTION_PAUSE, ACTION_RESTART,
-  createInput,
-} from './input.js';
-import { createAudio } from './audio.js';
-import {
-  SCREEN_LOSS, SCREEN_PAUSED, SCREEN_TABLE, SCREEN_TITLE, SCREEN_WIN,
-  createRenderer,
-} from './render.js';
+// BRASS BAZAAR — the main loop. One job: own the canvas, the clock, the screen
+// state, and the hand-off between the player's turn and Zinnia's.
+import { CANVAS_H, CANVAS_W } from './config.js';
+import { createGame, endPlayerTurn, nextDuel, startPlayerTurn } from './rules.js';
+import { chooseTelegraph, runRivalTurn } from './ai.js';
+import { createInput } from './input.js';
+import { hitTest, render } from './render.js';
+import { sfx } from './audio.js';
 import { stageShot } from './shots.js';
 
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
-
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const random = createRandom(seed);
-const renderer = createRenderer(canvas);
-const audio = createAudio();
-const input = createInput(canvas);
+const ctx = canvas.getContext('2d');
+canvas.width = CANVAS_W;
+canvas.height = CANVAS_H;
 
-function announce(message) {
-  status.textContent = message;
-}
+const params = new URLSearchParams(window.location.search);
+const shotKind = params.get('shot');
+const seed = Number(params.get('seed') || '7');
 
-function inBox(mouse, box) {
-  return !!box && mouse.x >= box.x && mouse.x <= box.x + box.w && mouse.y >= box.y && mouse.y <= box.y + box.h;
-}
+let game;
+let input;
+let rivalTimer = null; // ms left before Zinnia's turn resolves (lets her "think")
 
-function runShot(name) {
-  const staged = stageShot(name, seed);
-  const game = staged.game;
-  window.__shotGame = game;
-  window.__shotScreen = staged.screen;
-  let painted = 0;
-  function paint() {
-    renderer.draw(game, staged.screen, { mouse: { x: -1, y: -1 }, timeMs: 1200 });
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const game = createGame(random);
-  window.__game = game;
-  window.__screen = () => screen;
+function freshGame() {
+  game = createGame(seed);
   chooseTelegraph(game);
-  let screen = SCREEN_TITLE;
-  let pausedFrom = SCREEN_TABLE;
-  let baronPlan = null;
-  let baronTimerMs = 0;
-  let duelPauseMs = 0;
-  let last = performance.now();
-
-  function startMatch() {
-    restartMatch(game);
-    chooseTelegraph(game);
-    screen = SCREEN_TABLE;
-    announce('Playing. Win 2 duels to take the match.');
-  }
-
-  function beginBaronTurn() {
-    baronPlan = buildPlan(game);
-    baronTimerMs = BARON_PLAY_DELAY_MS;
-  }
-
-  function finishBaronTurn() {
-    baronPlan = null;
-    if (game.duelOver) return;
-    chooseTelegraph(game);
-    startPlayerTurn(game);
-    audio.turn();
-  }
-
-  function handleDuelEnd(dtMs) {
-    if (!game.duelOver) return;
-    duelPauseMs += dtMs;
-    if (duelPauseMs < 2200) return;
-    duelPauseMs = 0;
-    const over = game.duelOver;
-    game.duelOver = null;
-    if (over === 'player' && game.playerDuels >= 2) {
-      game.matchOver = 'player';
-      screen = SCREEN_WIN;
-      audio.win();
-      announce('Victory. The Lantern Isles keep their light.');
-    } else if (over === 'baron' && game.baronDuels >= 2) {
-      game.matchOver = 'baron';
-      screen = SCREEN_LOSS;
-      audio.lose();
-      announce('Defeat. The Baron keeps the tide.');
-    } else {
-      nextDuel(game);
-      chooseTelegraph(game);
-      announce(`Duel ${game.duel} begins.`);
-    }
-  }
-
-  function handleActions() {
-    const actions = input.takeActions();
-    const cardKey = input.takeCardKey();
-    const clicked = input.takeClick();
-    const mouse = input.mouse;
-
-    if (actions & ACTION_MUTE) {
-      const muted = audio.toggleMute();
-      announce(muted ? 'Muted.' : 'Sound on.');
-    }
-    if (actions & ACTION_RESTART && (screen === SCREEN_TABLE || screen === SCREEN_PAUSED)) {
-      startMatch();
-      return;
-    }
-    if (screen === SCREEN_TITLE) {
-      if ((actions & ACTION_CONFIRM) || (clicked && inBox(mouse, renderer.layout.playButton))) {
-        audio.unlock();
-        audio.playCard();
-        startMatch();
-      }
-      return;
-    }
-    if (screen === SCREEN_WIN || screen === SCREEN_LOSS) {
-      if ((actions & ACTION_CONFIRM) || (clicked && inBox(mouse, renderer.layout.retryButton))) {
-        audio.unlock();
-        startMatch();
-      }
-      return;
-    }
-    if (screen === SCREEN_PAUSED) {
-      if ((actions & ACTION_PAUSE) || clicked) {
-        screen = pausedFrom;
-        announce('Playing.');
-      }
-      return;
-    }
-    // Table screen.
-    if (actions & ACTION_PAUSE) {
-      pausedFrom = screen;
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-      return;
-    }
-    if (game.phase !== PHASE_PLAYER || game.duelOver || game.matchOver) return;
-    if (clicked && inBox(mouse, renderer.layout.endTurn)) {
-      endPlayerTurn(game);
-      beginBaronTurn();
-      audio.turn();
-      return;
-    }
-    if (actions & ACTION_END_TURN) {
-      endPlayerTurn(game);
-      beginBaronTurn();
-      audio.turn();
-      return;
-    }
-    let cardIndex = -1;
-    if (cardKey >= 0) cardIndex = cardKey;
-    else if (clicked) {
-      for (const hit of renderer.layout.handCards) {
-        if (inBox(mouse, hit)) {
-          cardIndex = hit.index;
-          break;
-        }
-      }
-    }
-    if (cardIndex >= 0 && cardIndex < game.player.hand.length) {
-      const card = game.player.hand[cardIndex];
-      if (canPlay(game, game.player, card)) {
-        audio.unlock();
-        const result = playCard(game, game.player, cardIndex);
-        if (result) {
-          audio.playCard();
-          if (card.kind === 'Strike') audio.strike();
-          if (card.kind === 'Guard') audio.guard();
-          if (card.kind === 'Trick') audio.trick();
-          if (result.notes.length > 0) audio.combo();
-          if (game.duelOver) checkDuelEnd(game);
-        }
-      }
-    }
-  }
-
-  function stepBaron(dtMs) {
-    if (game.phase !== PHASE_BARON || game.duelOver || game.matchOver) return;
-    if (baronPlan === null) {
-      beginBaronTurn();
-      return;
-    }
-    baronTimerMs -= dtMs;
-    if (baronTimerMs > 0) return;
-    baronTimerMs = BARON_PLAY_DELAY_MS;
-    if (baronPlan.length === 0) {
-      finishBaronTurn();
-      return;
-    }
-    if (playPlannedCard(game, baronPlan)) audio.playCard();
-    if (game.duelOver) baronPlan = [];
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    const dtMs = Math.min(250, Math.max(0, now - last));
-    last = now;
-    handleActions();
-    // Age the transient visuals.
-    if (game.announcement) game.announcement.ageMs += dtMs;
-    for (const entry of game.played) entry.ageMs += dtMs;
-    for (const floater of game.floaters) floater.ageMs += dtMs;
-    game.floaters = game.floaters.filter((floater) => floater.ageMs < 1100);
-    if (game.announcement && game.announcement.ageMs > 2200) game.announcement = null;
-    stepBaron(dtMs);
-    handleDuelEnd(dtMs);
-    renderer.draw(game, screen, { mouse: input.mouse, timeMs: now });
-  }
-
-  announce('TIDEBOUND. Press Enter or click Play to start.');
-  requestAnimationFrame(frame);
+  game.screen = 'title';
+  window.__game = game;
+  return game;
 }
 
-if (shot) runShot(shot);
-else runGame();
+function startMatch() {
+  game.screen = 'table';
+  game.announcement = { text: 'DUEL 1 — out-haggle her!', big: true, t: 0 };
+  sfx.turn();
+}
+
+function onButton(id) {
+  if (id === 'play') {
+    sfx.click();
+    startMatch();
+    return;
+  }
+  if (id === 'again') {
+    sfx.click();
+    freshGame();
+    startMatch();
+    return;
+  }
+  if (id === 'restart') {
+    sfx.click();
+    freshGame();
+    startMatch();
+    return;
+  }
+  if (id === 'next') {
+    sfx.click();
+    nextDuel(game);
+    return;
+  }
+  if (id === 'end') {
+    if (game.phase === 'player' && !game.duelOver && !game.matchOver) {
+      endPlayerTurn(game);
+      sfx.turn();
+      rivalTimer = 900; // Zinnia takes a breath before she haggles.
+    }
+  }
+}
+
+function afterPlay() {
+  // After any player action, a finished duel waits for the Next Duel button;
+  // an ended turn waits out the rival timer in the loop below.
+  if (game.matchOver) {
+    if (game.matchWinner === 'player') sfx.win();
+    else sfx.lose();
+  }
+}
+
+if (shotKind) {
+  game = stageShot(shotKind, seed);
+  window.__game = game;
+  window.__shotGame = game;
+  window.__shotScreen = game.screen;
+  input = { hover: null, mouse: { x: -1, y: -1 } };
+  render(ctx, game, input, performance.now());
+  window.__shotReady = true;
+} else {
+  freshGame();
+  input = createInput(canvas, () => game, {
+    hitTest,
+    onButton,
+    afterPlay,
+  });
+  window.__screen = () => game.screen;
+  window.__game = game;
+
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    if (!game.paused) {
+      if (game.announcement) {
+        game.announcement.t += dt;
+        if (game.announcement.t > 2.4) game.announcement = null;
+      }
+      for (const f of game.floaters) f.t += dt;
+      game.floaters = game.floaters.filter((f) => f.t < 1.2);
+      if (rivalTimer !== null) {
+        rivalTimer -= dt * 1000;
+        if (rivalTimer <= 0) {
+          rivalTimer = null;
+          if (game.phase === 'rival' && !game.duelOver && !game.matchOver) {
+            runRivalTurn(game);
+            if (!game.duelOver && !game.matchOver) startPlayerTurn(game);
+            if (game.matchOver) {
+              if (game.matchWinner === 'player') sfx.win();
+              else sfx.lose();
+            }
+          }
+        }
+      }
+    }
+    render(ctx, game, input, now);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}

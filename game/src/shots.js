@@ -1,133 +1,128 @@
-// TIDEBOUND — screenshot staging. One job: put the game into each shot's
-// scene by playing the real rules forward from a fresh state with a fixed
-// seed and a simple autopilot, so every frame is what a real game looks like
-// and the same seed always gives the same frame.
-import { createRandom } from './deck.js';
-import { createGame, playCard, startPlayerTurn, endPlayerTurn, nextDuel, PHASE_PLAYER } from './rules.js';
-import { buildPlan, chooseTelegraph, playPlannedCard } from './ai.js';
-import { SCREEN_LOSS, SCREEN_TABLE, SCREEN_TITLE, SCREEN_WIN } from './render.js';
+// BRASS BAZAAR — screenshot staging. One job: given ?shot=title|table|win|loss,
+// drive the real rules forward from a fresh seeded game until the scene looks
+// like a real game, then flag the page ready. Every frame is a real game state.
+import { BEATS, STALL_ORDER } from './config.js';
+import { createGame, nextDuel, playCard, startPlayerTurn } from './rules.js';
+import { chooseTelegraph, runRivalTurn } from './ai.js';
 
-// The autopilot: play the best affordable card (Counter suit first, then
-// Harmony, then the biggest number), and end the turn when nothing is left
-// worth playing. `bold` plays even a weak card; a timid pilot never plays
-// at all, and simply lets the Baron take the table.
-function autopilotPlay(game, bold) {
-  if (!bold) return false;
-  const hand = game.player.hand;
-  let best = -1;
-  let bestScore = -Infinity;
-  hand.forEach((card, index) => {
-    if (card.cost > game.player.ink) return;
-    let score = card.value - card.cost;
-    if (card.suit === game.telegraph) score += 6;
-    if (game.suitsPlayed.includes(card.suit)) score += 4;
-    if (card.kind === 'Guard' && game.player.life > 20) score -= 4;
-    if (score > bestScore) {
-      bestScore = score;
-      best = index;
-    }
-  });
-  if (best === -1) return false;
-  if (!bold && bestScore < 1 && game.suitsPlayed.length > 0) return false;
-  return playCard(game, game.player, best) !== null;
+// Score a card the way a sharp player would: Sells first (they win duels),
+// Undercut and Stall Set bonuses counted in, Charms only when hurt, Haggles
+// as cheap setup. The autopilot must actually win, or the win shot is a lie.
+function scoreForAutopilot(game, card) {
+  let score = card.value;
+  if (card.kind === 'sell') score += 4;
+  if (card.kind === 'charm') score = game.player.patrons <= 12 ? card.value : card.value * 0.4;
+  if (card.kind === 'haggle') score = card.effect === 'draw' ? 3 : 2;
+  if (BEATS[card.stall] === game.telegraph.stall) score += 3;
+  if (game.stallsThisTurn.includes(card.stall)) score += 2;
+  return score - card.cost * 0.5;
 }
 
-function runBaronTurn(game) {
-  const plan = buildPlan(game);
-  while (plan.length > 0) {
-    if (!playPlannedCard(game, plan)) break;
-    if (game.duelOver) return;
-  }
-  chooseTelegraph(game);
-  if (!game.duelOver && !game.matchOver) startPlayerTurn(game);
+function bestAffordable(game) {
+  const hand = game.player.hand.filter((c) => c.cost <= game.player.coins);
+  if (hand.length === 0) return null;
+  hand.sort((a, b) => scoreForAutopilot(game, b) - scoreForAutopilot(game, a));
+  return hand[0];
 }
 
-// Play whole turns until `stop` says enough, or the match ends.
-function playTurns(game, stop, bold) {
+// Play a full player turn with a simple autopilot: play the biggest affordable
+// card, repeat while coins remain, then hand over to Zinnia.
+function autopilotTurn(game) {
   let guard = 0;
-  while (!game.matchOver && guard < 400) {
+  while (guard < 8 && !game.duelOver && !game.matchOver) {
     guard += 1;
-    if (game.duelOver) {
-      nextDuel(game);
-      continue;
-    }
-    if (game.phase === PHASE_PLAYER) {
-      let played = 0;
-      while (autopilotPlay(game, bold) && played < 6) {
-        played += 1;
-        if (game.duelOver || game.matchOver) break;
-      }
-      if (game.duelOver || game.matchOver) continue;
-      endPlayerTurn(game);
-    } else {
-      runBaronTurn(game);
-    }
-    if (stop(game)) return;
+    const card = bestAffordable(game);
+    if (!card) break;
+    playCard(game, 'player', card);
   }
+  if (game.duelOver || game.matchOver) return;
+  game.phase = 'rival';
+  runRivalTurn(game);
+  if (game.duelOver || game.matchOver) return;
+  startPlayerTurn(game);
 }
 
-function settle(game) {
-  // Animations at rest: played cards fully slid in, announcements readable,
-  // and transient damage numbers cleared (they would otherwise drift across
-  // the played cards mid-frame).
-  for (const entry of game.played) entry.ageMs = 400;
-  if (game.announcement) game.announcement.ageMs = 600;
-  game.floaters = [];
-}
-
-// Stage one named scene and return the screen to paint over it.
-export function stageShot(name, seed) {
-  const random = createRandom(seed);
-  const game = createGame(random);
+export function stageShot(kind, seed = 7) {
+  const game = createGame(seed);
   chooseTelegraph(game);
-  if (name === 'title') {
-    return { game, screen: SCREEN_TITLE };
+  game.screen = 'table';
+
+  if (kind === 'title') {
+    game.screen = 'title';
+    return game;
   }
-  if (name === 'table') {
-    // A dense mid-duel: three turns in, both sides hurt — then Wren plays
-    // out the fourth turn with a full ink purse, so the frame shows played
-    // cards in the centre, suits on the combo meter and a combo landing.
-    playTurns(game, (g) => g.turn >= 4 && g.phase === PHASE_PLAYER, true);
-    game.player.ink = 6;
-    let played = 0;
-    while (played < 3 && !game.duelOver && autopilotPlay(game, true)) played += 1;
-    settle(game);
-    return { game, screen: SCREEN_TABLE };
-  }
-  if (name === 'win') {
-    // The bold pilot wins the match; if the Baron survives the cap, Wren's
-    // lantern is down to a spark and one more strike ends it.
-    playTurns(game, () => false, true);
-    if (!game.matchOver) {
-      game.baron.life = 1;
-      const strike = game.player.hand.find((card) => card.kind === 'Strike' && card.cost <= game.player.ink);
-      if (strike) playCard(game, game.player, game.player.hand.indexOf(strike));
-      if (game.duelOver && !game.matchOver) nextDuel(game);
-      if (game.matchOver !== 'player') {
-        // The cap was hit before the match ended: settle the scoreboard so
-        // the frame still shows a won match, 2 duels to 1 at most.
-        game.matchOver = 'player';
-        game.duelOver = null;
-        game.playerDuels = 2;
-        if (game.baronDuels >= 2) game.baronDuels = 1;
+
+  if (kind === 'win') {
+    // Win duels 1 and 2 for real: autopilot until the match is won. If one
+    // seed loses the match, retry with the next seed — the shot must show a
+    // genuine victory, never a staged one.
+    for (let seedTry = seed; seedTry < seed + 8; seedTry += 1) {
+      const attempt = createGame(seedTry);
+      chooseTelegraph(attempt);
+      attempt.screen = 'table';
+      let guard = 0;
+      while (!attempt.matchOver && guard < 300) {
+        guard += 1;
+        if (attempt.duelOver) { nextDuel(attempt); continue; }
+        if (attempt.phase === 'player') autopilotTurn(attempt);
+        else { runRivalTurn(attempt); if (!attempt.duelOver && !attempt.matchOver) startPlayerTurn(attempt); }
+      }
+      if (attempt.matchOver && attempt.matchWinner === 'player') {
+        attempt.screen = 'win';
+        return attempt;
       }
     }
-    settle(game);
-    return { game, screen: SCREEN_WIN };
+    const fallback = createGame(seed);
+    fallback.screen = 'table';
+    return fallback;
   }
-  // 'loss': the timid pilot never plays a card; the Baron takes both duels.
-  // If the cap is hit first, the tide finishes the job.
-  playTurns(game, () => false, false);
-  if (!game.matchOver) {
-    game.player.life = 1;
-    runBaronTurn(game);
-    if (game.matchOver !== 'baron') {
-      game.matchOver = 'baron';
-      game.duelOver = null;
-      game.baronDuels = 2;
-      if (game.playerDuels >= 2) game.playerDuels = 1;
+
+  if (kind === 'loss') {
+    // Let Zinnia win: the player passes every turn.
+    let guard = 0;
+    while (!game.matchOver && guard < 300) {
+      guard += 1;
+      if (game.duelOver) { nextDuel(game); continue; }
+      if (game.phase === 'player') {
+        game.phase = 'rival';
+        runRivalTurn(game);
+        if (!game.duelOver && !game.matchOver) startPlayerTurn(game);
+      } else {
+        runRivalTurn(game);
+        if (!game.duelOver && !game.matchOver) startPlayerTurn(game);
+      }
+    }
+    game.screen = game.matchOver ? (game.matchWinner === 'player' ? 'win' : 'loss') : 'table';
+    return game;
+  }
+
+  // Table: a dense mid-duel. Play real turns, but stop while both sides are
+  // still standing with a full counter — never on a duel-over screen. If a
+  // duel ends mid-staging, start the next one and keep playing.
+  let turns = 0;
+  while (turns < 2 && !game.matchOver) {
+    turns += 1;
+    if (game.duelOver) { nextDuel(game); continue; }
+    if (game.player.patrons <= 12 || game.rival.patrons <= 12) break;
+    autopilotTurn(game);
+  }
+  if (game.duelOver && !game.matchOver) nextDuel(game);
+  // Stage up to three more player plays so the counter shows fresh cards.
+  // Cheapest first: three coins should buy a visible little exchange.
+  if (!game.duelOver && !game.matchOver && game.phase === 'player') {
+    for (let i = 0; i < 3; i += 1) {
+      const affordable = game.player.hand.filter((c) => c.cost <= game.player.coins);
+      if (affordable.length === 0) break;
+      affordable.sort((a, b) => a.cost - b.cost || scoreForAutopilot(game, b) - scoreForAutopilot(game, a));
+      playCard(game, 'player', affordable[0]);
     }
   }
-  settle(game);
-  return { game, screen: SCREEN_LOSS };
+  if (game.stats.combos > 0) game.announcement = { text: 'STALL SET +2', big: true, t: 0 };
+  else if (game.rushHour) game.announcement = { text: 'RUSH HOUR! Next Sell +4', big: true, t: 0 };
+  // A still frame never advances floater clocks, so keep only the latest
+  // floating number, mid-rise, instead of a pile of stale ones.
+  game.floaters = game.floaters.slice(-1);
+  if (game.floaters[0]) game.floaters[0].t = 0.35;
+  game.screen = 'table';
+  return game;
 }
